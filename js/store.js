@@ -23,6 +23,9 @@ export const DEFAULT_SETTINGS = {
   requireSignature: true,
   requireConfirmAtClose: true,
   adminPin: '',
+  caixaName: '',
+  caixaPhone: '', // WhatsApp de quem cuida do caixa
+  pix: {}, // chave Pix por jogador (chave = pixKey(nome))
   regulars: ['Tico', 'Ian', 'Giovanni', 'Davi', 'Marlon', 'Titã', 'Maciel', 'Nikin', 'Jota', 'Kevin', 'Felipin'],
 };
 
@@ -76,7 +79,7 @@ function migrateLegacy() {
 function settingsOf(raw) {
   // Configurações antigas (v1) são substituídas pelas novas regras do grupo.
   if (!raw || (raw.version ?? 1) < SETTINGS_VERSION) return { ...DEFAULT_SETTINGS, groupName: raw?.groupName ?? DEFAULT_SETTINGS.groupName, adminPin: raw?.adminPin ?? '' };
-  return { ...DEFAULT_SETTINGS, ...raw, regulars: raw.regulars ?? [] };
+  return { ...DEFAULT_SETTINGS, ...raw, regulars: raw.regulars ?? [], pix: raw.pix ?? {} };
 }
 
 function sessionOf(raw) {
@@ -196,6 +199,26 @@ export function updateSettings(patch) {
   if ((tree.settings?.version ?? 1) < SETTINGS_VERSION) updates.settings = { ...current, ...patch };
   else for (const [k, v] of Object.entries(patch)) updates[`settings/${k}`] = v;
   apply(updates);
+}
+
+// ---------- Chaves Pix ----------
+/** Nome → chave segura para o Firebase (sem . # $ [ ] /). */
+export const pixKey = (name) => encodeURIComponent(String(name).trim().toLowerCase()).replace(/\./g, '%2E');
+export const pixOf = (name) => view.settings.pix?.[pixKey(name)] || '';
+
+export function setPix(name, value) {
+  const pix = { ...view.settings.pix };
+  const v = String(value || '').trim();
+  if (v) pix[pixKey(name)] = v;
+  else delete pix[pixKey(name)];
+  updateSettings({ pix });
+}
+
+/** Todos os nomes conhecidos: frequentes, mesa atual e histórico. */
+export function knownPlayers() {
+  const seen = new Set();
+  const names = [...(view.settings.regulars || []), ...(view.session?.players || []).map((p) => p.name), ...view.history.flatMap((s) => s.players.map((p) => p.name))];
+  return names.filter((n) => !seen.has(n.toLowerCase()) && seen.add(n.toLowerCase()));
 }
 
 /** Fichas que entram em jogo por buy (descontando as do rake). */
@@ -343,7 +366,7 @@ export function closeSession() {
     players: raw.players,
     ledger: raw.ledger,
     result,
-    settingsAtClose: { ...view.settings, adminPin: null, regulars: null },
+    settingsAtClose: { ...view.settings, adminPin: null, regulars: null, pix: null },
   };
   apply({ [`history/${session.id}`]: closed, session: null });
   return session.id;
@@ -355,6 +378,10 @@ export function cancelSession() {
 }
 
 export const getHistorySession = (id) => view.history.find((s) => s.id === id);
+
+export function deleteHistorySession(id) {
+  apply({ [`history/${id}`]: null, [`signatures/${id}`]: null });
+}
 
 export function clearHistory() {
   apply({ history: null, signatures: null });

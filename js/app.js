@@ -332,6 +332,37 @@ function updateFechar() {
   app.querySelector('[data-action="close-session"]').disabled = !(session.players.length && !missing && r.diff === 0 && !unconfirmed);
 }
 
+/** Quem paga e quem recebe no acerto pelo caixa. */
+function caixaLists(s) {
+  const r = s.result;
+  const upfront = s.settingsAtClose?.paymentMode === 'caixa';
+  const pagar = upfront ? [] : r.rows.filter((x) => x.net < 0).map((x) => ({ name: x.name, amount: -x.net })).sort((a, b) => b.amount - a.amount);
+  const receber = r.rows.filter((x) => (upfront ? x.payout : x.net) > 0).map((x) => ({ name: x.name, amount: upfront ? x.payout : x.net })).sort((a, b) => b.amount - a.amount);
+  return { pagar, receber, rake: r.totals.rake };
+}
+
+function caixaMessage(s) {
+  const { pagar, receber, rake } = caixaLists(s);
+  const cfg = s.settingsAtClose || {};
+  return [
+    `♠ ${cfg.groupName || 'Poker'} — ${new Date(s.startedAt).toLocaleDateString('pt-BR')}`,
+    '',
+    '*A pagar:*',
+    ...(pagar.length ? pagar.map((x) => `${x.name} - ${money(x.amount)} - Pix: ${S.pixOf(x.name) || 'não cadastrado'}`) : ['Ninguém']),
+    '',
+    '*A receber:*',
+    ...(receber.length ? receber.map((x) => `${x.name} - ${money(x.amount)}`) : ['Ninguém']),
+    ...(rake ? ['', `Rake (fica no caixa): ${money(rake)}`] : []),
+  ].join('\n');
+}
+
+function whatsappLink(phone, text) {
+  let digits = String(phone || '').replace(/\D/g, '');
+  if (!digits) return null;
+  if (digits.length <= 11) digits = `55${digits}`;
+  return `https://wa.me/${digits}?text=${encodeURIComponent(text)}`;
+}
+
 function viewResultado(id) {
   const s = S.getHistorySession(id);
   if (!s) return `<section class="card"><p>Jogatina não encontrada.</p><a class="btn" href="#/historico">Voltar</a></section>`;
@@ -339,6 +370,9 @@ function viewResultado(id) {
   const cfg = s.settingsAtClose || {};
   const rows = [...r.rows].sort((a, b) => b.net - a.net);
   const caixa = cfg.paymentMode === 'caixa';
+  const { settings } = S.getState();
+  const lists = caixaLists(s);
+  const wa = whatsappLink(settings.caixaPhone, caixaMessage(s));
   return `
     <section class="hero small">
       <p class="muted">${day(s.startedAt)} · ${hour(s.startedAt)}–${hour(s.closedAt)}</p>
@@ -357,18 +391,32 @@ function viewResultado(id) {
         <tbody>${rows.map((x) => `<tr><td><strong>${esc(x.name)}</strong></td><td>${x.buys}</td><td class="hide-xs">${money(x.paid)}</td><td class="hide-xs">${num(x.chips)}</td><td>${money(x.payout)}</td><td class="${netClass(x.net)}"><strong>${signed(x.net)}</strong></td></tr>`).join('')}</tbody>
       </table></div>
     </section>
-    <section class="card">
-      ${caixa
-        ? `<h2>Pagamentos do caixa</h2><p class="muted small">Os buys foram pagos na hora. O caixa paga:</p>
-           <ul class="transfers">${rows.filter((x) => x.payout > 0).map((x) => `<li><span>Caixa → <strong>${esc(x.name)}</strong></span><strong>${money(x.payout)}</strong></li>`).join('')}
-           ${r.totals.rake ? `<li><span>Caixa → <strong>Casa (rake)</strong></span><strong>${money(r.totals.rake)}</strong></li>` : ''}</ul>`
-        : `<h2>Acertos (Pix)</h2><p class="muted small">Menor número de transferências para zerar tudo:</p>
-           <ul class="transfers">${r.transfers.map((t) => `<li><span><strong>${esc(t.from)}</strong> → <strong>${esc(t.to)}</strong></span><strong>${money(t.amount)}</strong></li>`).join('') || '<li>Ninguém deve nada 🎉</li>'}</ul>`}
+    <section class="card caixa">
+      <h2>Acerto com o caixa${settings.caixaName ? ` · ${esc(settings.caixaName)}` : ''}</h2>
+      <h3>A pagar</h3>
+      <ul class="transfers">${lists.pagar.map((x) => `<li><span><strong>${esc(x.name)}</strong><small class="pix ${S.pixOf(x.name) ? '' : 'missing'}">Pix: ${esc(S.pixOf(x.name) || 'não cadastrado')}</small></span><strong class="neg">${money(x.amount)}</strong></li>`).join('') || '<li class="muted">Ninguém</li>'}</ul>
+      <h3>A receber</h3>
+      <ul class="transfers">${lists.receber.map((x) => `<li><span><strong>${esc(x.name)}</strong></span><strong class="pos">${money(x.amount)}</strong></li>`).join('') || '<li class="muted">Ninguém</li>'}</ul>
+      ${lists.rake ? `<p class="muted small">Rake (fica no caixa): <strong>${money(lists.rake)}</strong></p>` : ''}
+      ${lists.pagar.some((x) => !S.pixOf(x.name)) ? '<p class="notice">Tem jogador sem chave Pix. Cadastre em Admin → Chaves Pix (a mensagem usa a chave atual).</p>' : ''}
+      <div class="row wrap">
+        ${wa ? `<a class="btn primary whatsapp" href="${esc(wa)}" target="_blank" rel="noopener">Enviar para o caixa (WhatsApp)</a>`
+             : '<button class="btn primary whatsapp" data-action="caixa-phone">Enviar para o caixa (WhatsApp)</button>'}
+        <button class="btn" data-action="copy-caixa" data-id="${s.id}">Copiar mensagem</button>
+      </div>
     </section>
+    ${caixa ? '' : `
+    <details class="card">
+      <summary><h2>Alternativa: Pix direto entre jogadores</h2></summary>
+      <ul class="transfers">${r.transfers.map((t) => `<li><span><strong>${esc(t.from)}</strong> → <strong>${esc(t.to)}</strong></span><strong>${money(t.amount)}</strong></li>`).join('') || '<li>Ninguém deve nada 🎉</li>'}</ul>
+    </details>`}
     <div class="row wrap">
-      <button class="btn primary" data-action="share" data-id="${s.id}">Compartilhar resumo</button>
+      <button class="btn" data-action="share" data-id="${s.id}">Compartilhar resumo</button>
       <button class="btn" data-action="audit" data-id="${s.id}">Ver assinaturas</button>
+    </div>
+    <div class="row wrap">
       <a class="btn ghost" href="#/historico">Histórico</a>
+      <button class="btn danger" data-action="delete-session" data-id="${s.id}">Apagar partida</button>
     </div>`;
 }
 
@@ -399,10 +447,10 @@ function viewHistorico() {
     <section class="history">
       ${history.map((s) => {
         const best = [...s.result.rows].sort((a, b) => b.net - a.net)[0];
-        return `<a class="history-item" href="#/resultado/${s.id}">
+        return `<div class="history-row"><a class="history-item" href="#/resultado/${s.id}">
           <span><strong>${day(s.startedAt)}</strong><small>${plural(s.players.length, 'jogador', 'jogadores')} · ${plural(s.result.totals.count, 'buy', 'buys')}</small></span>
           <span class="right"><strong>${money(s.result.totals.pot)}</strong>${best && best.net > 0 ? `<small>🏆 ${esc(best.name)} ${signed(best.net)}</small>` : ''}</span>
-        </a>`;
+        </a><button class="icon-btn trash" data-action="delete-session" data-id="${s.id}" aria-label="Apagar partida de ${day(s.startedAt)}" title="Apagar partida">🗑</button></div>`;
       }).join('')}
     </section>`;
 }
@@ -457,6 +505,17 @@ function viewAdmin() {
       <label>Nome do grupo<input class="field" name="groupName" value="${esc(settings.groupName)}" maxlength="40" /></label>
       <label><span>Jogadores frequentes <small class="muted">— um por linha</small></span>
         <textarea class="field" name="regulars" rows="6">${esc((settings.regulars || []).join('\n'))}</textarea></label>
+
+      <h2>Caixa</h2>
+      <div class="grid2">
+        <label>Quem cuida do caixa<input class="field" name="caixaName" value="${esc(settings.caixaName)}" maxlength="30" placeholder="Nome" /></label>
+        <label>WhatsApp do caixa<input class="field" name="caixaPhone" type="tel" inputmode="tel" value="${esc(settings.caixaPhone)}" placeholder="(11) 99999-9999" /></label>
+      </div>
+
+      <h2>Chaves Pix dos jogadores</h2>
+      <p class="muted small" style="margin:0">Aparecem na mensagem do caixa, ao lado de quem precisa pagar.</p>
+      <div class="pix-list">${S.knownPlayers().map((n) => `<label class="pix-row"><span>${esc(n)}</span>
+        <input class="field" name="pix:${esc(n)}" value="${esc(S.pixOf(n))}" placeholder="CPF, celular, e-mail…" autocomplete="off" /></label>`).join('')}</div>
 
       <h2>Valores</h2>
       ${locked ? '<p class="notice">🔒 Valores travados durante a jogatina para não misturar buys de preços diferentes. Encerre a jogatina para alterar.</p>' : ''}
@@ -561,6 +620,7 @@ function openPlayer(playerId) {
   openModal(
     `<header><h2>${esc(p.name)}</h2><button class="icon-btn" data-close aria-label="Fechar">✕</button></header>
      <p class="muted">${plural(st.buys, 'buy válido', 'buys válidos')} · ${money(st.paid)}</p>
+     <button type="button" class="btn small ghost pix-btn" data-pix>Pix: ${esc(S.pixOf(p.name) || 'cadastrar chave')} ✎</button>
      <ul class="entries">
        ${entries.map((e) => `<li class="${e.voided ? 'voided' : ''}">
           <div><strong>${e.voided ? 'Buy anulado' : `Buy #${e.seq}`}</strong><small>${hour(e.at)} · ${money(e.value)}</small>
@@ -590,6 +650,11 @@ function openPlayer(playerId) {
           openPlayer(playerId);
         }),
       );
+      root.querySelector('[data-pix]').addEventListener('click', async () => {
+        const v = await ask({ title: `Chave Pix de ${p.name}`, input: `value="${esc(S.pixOf(p.name))}" placeholder="CPF, celular, e-mail…"`, confirmText: 'Salvar' });
+        if (v !== null) { S.setPix(p.name, v); toast('Chave Pix salva'); }
+        openPlayer(playerId);
+      });
       root.querySelector('[data-rename]').addEventListener('click', async () => {
         const name = await ask({ title: 'Renomear', input: `value="${esc(p.name)}" maxlength="30"`, confirmText: 'Salvar' });
         if (name) attempt(() => S.renamePlayer(playerId, name));
@@ -684,7 +749,7 @@ function route() {
 function snapshotInputs() {
   return [...app.querySelectorAll('[data-form] [name]')]
     .filter((el) => el.dataset.dirty)
-    .map((el) => ({ sel: `[data-form="${el.form.dataset.form}"] [name="${el.name}"]`, value: el.type === 'checkbox' ? el.checked : el.value, focused: el === document.activeElement }));
+    .map((el) => ({ sel: `[data-form="${el.form.dataset.form}"] [name="${CSS.escape(el.name)}"]`, value: el.type === 'checkbox' ? el.checked : el.value, focused: el === document.activeElement }));
 }
 function restoreInputs(saved) {
   for (const s of saved) {
@@ -729,7 +794,7 @@ window.addEventListener('hashchange', () => { adminGateOpen = false; renderedKey
 S.subscribe(render);
 
 // ---------- Eventos ----------
-const guarded = new Set(['cancel-session', 'clear-history', 'group-leave']);
+const guarded = new Set(['cancel-session', 'clear-history', 'group-leave', 'delete-session']);
 app.addEventListener('click', async (e) => {
   const el = e.target.closest('[data-action]');
   if (!el) return;
@@ -767,6 +832,25 @@ app.addEventListener('click', async (e) => {
       return;
     }
     case 'audit': return openAudit(id);
+    case 'copy-caixa': {
+      try { await navigator.clipboard.writeText(caixaMessage(S.getHistorySession(id))); toast('Mensagem copiada'); } catch { toast('Não foi possível copiar', { type: 'error' }); }
+      return;
+    }
+    case 'caixa-phone': {
+      const phone = await ask({ title: 'WhatsApp do caixa', body: 'Número de quem cuida do caixa, com DDD. Fica salvo para as próximas.', input: 'type="tel" inputmode="tel" placeholder="(11) 99999-9999"', confirmText: 'Salvar', validate: (v) => (v.replace(/\D/g, '').length >= 10 ? null : 'Número inválido') });
+      if (phone) { S.updateSettings({ caixaPhone: phone }); toast('Pronto! Agora toque em “Enviar para o caixa”'); }
+      return;
+    }
+    case 'delete-session': {
+      const s = S.getHistorySession(id);
+      if (!s) return;
+      const ok = await confirmDialog('Apagar esta partida?', `A partida de <strong>${day(s.startedAt)}</strong> (pote de ${money(s.result.totals.pot)}) e as assinaturas dela serão apagadas para todos. Não dá para desfazer.`, { confirmText: 'Apagar', danger: true });
+      if (!ok) return;
+      S.deleteHistorySession(id);
+      toast('Partida apagada');
+      if (location.hash.startsWith('#/resultado/')) location.hash = '#/historico';
+      return;
+    }
     case 'admin-unlock':
       if (await requireAdmin('abrir as configurações')) { adminGateOpen = true; render(); }
       return;
@@ -851,8 +935,18 @@ app.addEventListener('submit', (e) => {
     }
     case 'settings': {
       const { session } = S.getState();
+      const pix = { ...S.getState().settings.pix };
+      for (const [k, v] of data.entries()) {
+        if (!k.startsWith('pix:')) continue;
+        const key = S.pixKey(k.slice(4));
+        if (String(v).trim()) pix[key] = String(v).trim();
+        else delete pix[key];
+      }
       const patch = {
         groupName: String(data.get('groupName') || '').trim() || 'Poker Night',
+        caixaName: String(data.get('caixaName') || '').trim(),
+        caixaPhone: String(data.get('caixaPhone') || '').trim(),
+        pix,
         regulars: String(data.get('regulars') || '').split(/[\n,]/).map((n) => n.trim().replace(/\s+/g, ' ')).filter(Boolean),
         requireSignature: data.get('requireSignature') === 'on',
         requireConfirmAtClose: data.get('requireConfirmAtClose') === 'on',

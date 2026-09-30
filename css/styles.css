@@ -304,3 +304,24 @@ textarea.field { resize: vertical; line-height: 1.4; }
 .buy-amount span { display: flex; flex-direction: column; align-items: flex-end; }
 .buy-amount small { font-size: 0.8rem; font-weight: 500; }
 .card > p:first-of-type:not(.muted) { margin-top: 0; }
+
+/* ---------- Caixa / Pix / histórico ---------- */
+.caixa h3 { margin: 14px 0 2px; font-size: 0.95rem; }
+.caixa h3:first-of-type { margin-top: 0; }
+.caixa .row { margin-top: 14px; }
+.transfers li > span { display: flex; flex-direction: column; min-width: 0; }
+.pix { color: var(--muted); font-size: 0.82rem; word-break: break-all; }
+.pix.missing { color: #f59e0b; }
+.btn.whatsapp { background: #25d366; color: #062b14; }
+details.card > summary { list-style: none; cursor: pointer; }
+details.card > summary::-webkit-details-marker { display: none; }
+details.card > summary h2 { margin: 0; }
+details.card > summary h2::after { content: ' ▾'; }
+details.card[open] > summary h2 { margin-bottom: 12px; }
+.pix-list { display: flex; flex-direction: column; gap: 8px; }
+.form label.pix-row { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 10px; font-weight: 600; }
+.pix-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pix-btn { align-self: flex-start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.history-row { display: flex; gap: 8px; align-items: stretch; }
+.history-row .history-item { flex: 1; min-width: 0; }
+.icon-btn.trash { width: 48px; height: auto; border-radius: var(--radius); border: 1px solid var(--line); background: var(--felt); font-size: 1.1rem; }

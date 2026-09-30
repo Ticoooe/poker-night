@@ -10,9 +10,18 @@ Controle das noites de poker com os amigos: buys por jogador, pote sempre visív
 2. **+ Buy:** o jogador **assina com o dedo** na tela e confirma. O pote, o número de buys e as fichas em jogo atualizam na hora, no topo da tela.
 3. Errou? Um toque em **Desfazer** logo após o registro, ou toque no nome do jogador → *Anular* (pede motivo e, se configurado, PIN).
 4. **Finalizar jogatina:** conte as fichas de cada um, digite, e o jogador marca *Conferido*. Só dá para encerrar quando **a soma bate exatamente** com as fichas em jogo.
-5. **Resultado:** quanto cada um recebe, o saldo e a lista mínima de Pix. Botão para compartilhar no grupo do WhatsApp.
+5. **Resultado:** quanto cada um recebe e o saldo. O botão **Enviar para o caixa (WhatsApp)** abre a conversa com o caixa já com a mensagem pronta:
+   ```
+   A pagar:
+   Ian - R$ 60,00 - Pix: ian@email.com
+   A receber:
+   Tico - R$ 45,00
+   Davi - R$ 5,00
+   Rake (fica no caixa): R$ 10,00
+   ```
+6. **Histórico:** todas as partidas encerradas. Dá para apagar uma partida específica (🗑 na lista ou *Apagar partida* no resultado; pede o PIN, se houver).
 
-**Admin (⚙︎):** nome do grupo, jogadores frequentes, valor do buy, fichas por buy, rake (fichas por buy, % do pote ou fixo), forma de pagamento, PIN do admin, sincronização online e backup.
+**Admin (⚙︎):** nome do grupo, jogadores frequentes, caixa (nome + WhatsApp), chaves Pix dos jogadores, valor do buy, fichas por buy, rake (fichas por buy, % do pote ou fixo), forma de pagamento, PIN do admin, sincronização online e backup.
 
 ### Regras atuais do grupo
 
@@ -27,7 +36,9 @@ Com a sincronização ligada, todos os celulares do grupo veem a mesma mesa em t
 
 Cada buy é gravado como um registro separado, então dois celulares lançando ao mesmo tempo **nunca sobrescrevem** um ao outro. Sem internet, os lançamentos ficam na fila e sobem quando a conexão volta.
 
-### Configuração (uma vez só, ~5 min, grátis)
+O Firebase do grupo (`poker-night-aeed6`) já está configurado em [`js/firebase-config.js`](js/firebase-config.js). Para começar: no celular do caixa, **Admin → Criar grupo online → Compartilhar link do grupo**.
+
+### Configuração do zero (caso precise recriar o Firebase)
 
 1. Acesse https://console.firebase.google.com e crie um projeto (ex.: `poker-night`). Pode desativar o Google Analytics.
 2. No menu **Criação → Realtime Database → Criar banco de dados**. Escolha a localização (Estados Unidos) e **modo bloqueado**.
