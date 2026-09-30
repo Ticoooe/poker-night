@@ -1,4 +1,4 @@
-# ♠ Poker Night
+# ♠ Poker das Uvas 🍇
 
 Controle das noites de poker com os amigos: buys por jogador, pote sempre visível, fechamento com conferência de fichas e acertos via Pix. Funciona no celular e no computador, sem instalar nada.
 

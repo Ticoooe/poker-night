@@ -15,7 +15,7 @@ const SETTINGS_VERSION = 2;
 
 export const DEFAULT_SETTINGS = {
   version: SETTINGS_VERSION,
-  groupName: 'Poker dos Amigos',
+  groupName: 'Poker das Uvas 🍇',
   buyValue: 3000, // centavos
   chipsPerBuy: 60, // fichas que o buy representa (incluindo as do rake)
   rakeMode: 'perBuy', // none | perBuy (fichas por buy) | percent | fixed (centavos)
@@ -31,6 +31,7 @@ export const DEFAULT_SETTINGS = {
   regulars: ['Tico', 'Ian', 'Giovanni', 'Davi', 'Marlon', 'Titã', 'Maciel', 'Nikin', 'Jota', 'Kevin', 'Felipin'],
 };
 
+const OLD_DEFAULT_NAMES = ['Poker dos Amigos', 'Poker Night'];
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
 const clean = (v) => (v === undefined ? null : JSON.parse(JSON.stringify(v)));
 const listeners = new Set();
@@ -79,6 +80,8 @@ function migrateLegacy() {
 }
 
 function settingsOf(raw) {
+  // Grupos que ainda usam o nome padrão antigo passam a usar o novo.
+  if (raw && OLD_DEFAULT_NAMES.includes(raw.groupName)) raw = { ...raw, groupName: DEFAULT_SETTINGS.groupName };
   // Configurações antigas (v1) são substituídas pelas novas regras do grupo.
   if (!raw || (raw.version ?? 1) < SETTINGS_VERSION) return { ...DEFAULT_SETTINGS, groupName: raw?.groupName ?? DEFAULT_SETTINGS.groupName, adminPin: raw?.adminPin ?? '' };
   return { ...DEFAULT_SETTINGS, ...raw, regulars: raw.regulars ?? [], pix: raw.pix ?? {} };
@@ -552,7 +555,7 @@ export const exportData = () =>
 
 export function importData(json) {
   const data = JSON.parse(json);
-  if (data.app !== 'poker-night') throw new Error('Arquivo não é um backup do Poker Night');
+  if (data.app !== 'poker-night') throw new Error('Arquivo não é um backup do Poker das Uvas');
   if ((data.version ?? 1) < 2) {
     localStorage.setItem(LEGACY_KEY, json);
     const migrated = migrateLegacy();

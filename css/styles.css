@@ -384,3 +384,8 @@ details.card[open] > summary h2 { margin-bottom: 12px; }
 .approvals li > div:first-child { flex: 1 1 100%; }
 .approvals li > .sig-grid { flex: 1 1 100%; flex-direction: row; flex-wrap: wrap; }
 .approvals .sig-grid img, .approvals .sig-grid em { height: 56px; width: auto; max-width: calc(33% - 4px); object-fit: contain; }
+@media (max-width: 420px) {
+  .topbar { gap: 6px; }
+  .topbar nav a { padding: 8px 8px; font-size: 0.85rem; }
+  .brand { font-size: 0.98rem; }
+}

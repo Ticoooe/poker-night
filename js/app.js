@@ -983,7 +983,7 @@ function render() {
   const { name, arg } = route();
   const { settings, session } = S.getState();
   renderSync();
-  document.getElementById('brand-name').textContent = settings.groupName || 'Poker Night';
+  document.getElementById('brand-name').textContent = settings.groupName || S.DEFAULT_SETTINGS.groupName;
   document.querySelectorAll('[data-nav]').forEach((a) => {
     const active = a.dataset.nav === name || (a.dataset.nav === 'historico' && (name === 'resultado' || name === 'ranking')) || (a.dataset.nav === 'mesa' && name === 'fechar');
     a.classList.toggle('active', active);
@@ -1209,7 +1209,7 @@ app.addEventListener('submit', (e) => {
         else delete pix[key];
       }
       const patch = {
-        groupName: String(data.get('groupName') || '').trim() || 'Poker Night',
+        groupName: String(data.get('groupName') || '').trim() || S.DEFAULT_SETTINGS.groupName,
         caixaName: String(data.get('caixaName') || '').trim(),
         caixaPhone: String(data.get('caixaPhone') || '').trim(),
         pix,
