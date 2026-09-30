@@ -49,3 +49,19 @@ test('transferências mínimas', () => {
   const t = computeTransfers([{ name: 'A', net: -100 }, { name: 'B', net: 60 }, { name: 'C', net: 40 }]);
   assert.deepEqual(t, [{ from: 'A', to: 'B', amount: 60 }, { from: 'A', to: 'C', amount: 40 }]);
 });
+
+test('regra do grupo: buy R$30 = 60 fichas, 5 de rake (R$2,50) → 55 em jogo', () => {
+  const b = (id) => buy(id, 3000, 55, { rake: 250 });
+  const session = {
+    players: [{ id: 'a', name: 'Tico' }, { id: 'b', name: 'Ian' }, { id: 'c', name: 'Davi' }],
+    ledger: [b('a'), b('b'), b('b'), b('c')],
+  };
+  const r = computeSettlement(session, { rakeMode: 'perBuy', rakeValue: 5 }, { a: 150, b: 0, c: 70 });
+  assert.equal(r.totals.pot, 12000);
+  assert.equal(r.totals.rake, 1000);
+  assert.equal(r.totals.chips, 220);
+  assert.equal(r.diff, 0);
+  // 1 ficha = R$0,50
+  assert.deepEqual(r.rows.map((x) => x.payout), [7500, 0, 3500]);
+  assert.deepEqual(r.rows.map((x) => x.net), [4500, -6000, 500]);
+});

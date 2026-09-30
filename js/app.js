@@ -4,6 +4,7 @@ import { SignaturePad } from './signature.js';
 const app = document.getElementById('app');
 const dlg = document.getElementById('modal');
 const toastEl = document.getElementById('toast');
+const syncEl = document.getElementById('sync');
 
 // ---------- Formatação ----------
 const esc = (s) =>
@@ -16,12 +17,16 @@ const day = (ts) => new Date(ts).toLocaleDateString('pt-BR', { weekday: 'short',
 const toCents = (v) => Math.round((parseFloat(String(v).replace(',', '.')) || 0) * 100);
 const initial = (name) => name.trim().charAt(0).toUpperCase();
 const netClass = (n) => (n > 0 ? 'pos' : n < 0 ? 'neg' : '');
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 function rakeLabel(s) {
   switch (s.rakeMode) {
-    case 'perBuy': return `${money(s.rakeValue)} por buy`;
-    case 'percent': return `${s.rakeValue}% do pote`;
-    case 'fixed': return `${money(s.rakeValue)} fixo`;
+    case 'perBuy': {
+      const t = S.buyTerms(s);
+      return `Rake ${plural(t.rakeChips, 'ficha', 'fichas')} (${money(t.rake)}) por buy`;
+    }
+    case 'percent': return `Rake ${s.rakeValue}% do pote`;
+    case 'fixed': return `Rake ${money(s.rakeValue)} fixo`;
     default: return 'Sem rake';
   }
 }
@@ -72,10 +77,10 @@ function ask({ title, body = '', input, confirmText = 'Confirmar', danger = fals
         const field = form.querySelector('[name=v]');
         field?.focus();
         dlg.addEventListener('close', onClose);
-        form.addEventListener('submit', (e) => {
+        form.addEventListener('submit', async (e) => {
           e.preventDefault();
           const value = field ? field.value.trim() : true;
-          const err = validate?.(value);
+          const err = await validate?.(value);
           if (err) {
             const p = form.querySelector('.error');
             p.textContent = err;
@@ -127,6 +132,21 @@ function attempt(fn) {
   }
 }
 
+/** Preenche <img data-sig> com as assinaturas (buscadas no servidor quando online). */
+function loadSignatures(root, sessionId) {
+  root.querySelectorAll('[data-sig]').forEach(async (img) => {
+    try {
+      const src = await S.getSignature(sessionId, img.dataset.sig);
+      if (src) img.src = src;
+      else img.replaceWith(Object.assign(document.createElement('em'), { className: 'muted small', textContent: 'sem assinatura' }));
+    } catch {
+      img.alt = 'Assinatura indisponível offline';
+    }
+  });
+}
+
+const sigImg = (e) => (e.signed === false ? '<em class="muted small">sem assinatura</em>' : `<img data-sig="${e.id}" alt="Assinatura" />`);
+
 // ---------- Componentes ----------
 function summaryBar() {
   const { settings } = S.getState();
@@ -141,9 +161,23 @@ function summaryBar() {
     </section>`;
 }
 
+function termsLine(settings) {
+  const t = S.buyTerms(settings);
+  const rake = t.rakeChips ? ` + ${t.rakeChips} de rake (${money(t.rake)})` : settings.rakeMode === 'perBuy' ? ' · Sem rake' : ` · ${rakeLabel(settings)}`;
+  return `Buy <strong>${money(t.value)}</strong> → <strong>${num(t.chips)} fichas</strong>${rake} · ficha = ${money(Math.round(t.chipValue))}`;
+}
+
 function chipsPips(n) {
   const shown = Math.min(n, 8);
   return `<span class="pips" aria-hidden="true">${'<i></i>'.repeat(shown)}${n > 8 ? '<b>…</b>' : ''}</span>`;
+}
+
+function renderSync() {
+  const s = S.syncInfo();
+  const labels = { local: 'Só neste aparelho', connecting: 'Conectando…', online: 'Online', offline: 'Sem conexão', error: 'Erro de sincronização' };
+  syncEl.className = `sync ${s.mode}`;
+  syncEl.title = labels[s.mode] + (s.error ? ` — ${s.error}` : '');
+  syncEl.setAttribute('aria-label', syncEl.title);
 }
 
 // ---------- Views ----------
@@ -156,7 +190,7 @@ function viewStart() {
     <section class="hero">
       <div class="hero-suits">♠ ♥ ♦ ♣</div>
       <h1>Nova jogatina</h1>
-      <p class="muted">Buy de <strong>${money(settings.buyValue)}</strong> = ${num(settings.chipsPerBuy)} fichas · ${rakeLabel(settings)}</p>
+      <p class="muted">${termsLine(settings)}</p>
     </section>
     <section class="card">
       <h2>Quem vai jogar?</h2>
@@ -164,7 +198,7 @@ function viewStart() {
         <input class="field" name="name" placeholder="Nome do jogador" autocomplete="off" enterkeyhint="done" />
         <button class="btn">Adicionar</button>
       </form>
-      ${frequent.length ? `<p class="label">Jogadores frequentes</p>
+      ${frequent.length ? `<p class="label">Frequentes — toque para incluir</p>
         <div class="chips">${frequent.map((n) => `<button class="chip" data-action="pending-toggle" data-name="${esc(n)}">+ ${esc(n)}</button>`).join('')}</div>` : ''}
       ${pendingNames.length ? `<p class="label">Na mesa (${pendingNames.length})</p>
         <div class="chips">${pendingNames.map((n) => `<button class="chip on" data-action="pending-toggle" data-name="${esc(n)}">${esc(n)} ✕</button>`).join('')}</div>` : '<p class="muted small">Adicione pelo menos 2 jogadores (dá para incluir mais durante o jogo).</p>'}
@@ -175,14 +209,14 @@ function viewStart() {
 function viewMesa() {
   const { session, settings } = S.getState();
   if (!session) return viewStart();
-  const inTable = new Set(session.players.map((p) => p.name));
-  const frequent = S.frequentPlayers().filter((n) => !inTable.has(n)).slice(0, 8);
+  const inTable = new Set(session.players.map((p) => p.name.toLowerCase()));
+  const frequent = S.frequentPlayers().filter((n) => !inTable.has(n.toLowerCase()));
   const recent = [...session.ledger].filter((e) => e.type === 'buy' || e.type === 'void').reverse().slice(0, 6);
   const nameOf = (id) => session.players.find((p) => p.id === id)?.name ?? '—';
 
   return `
     ${summaryBar()}
-    <p class="session-meta">Começou ${hour(session.startedAt)} · ${num(settings.chipsPerBuy)} fichas por buy · ${rakeLabel(settings)}</p>
+    <p class="session-meta">Começou ${hour(session.startedAt)} · ${termsLine(settings)}</p>
     <section class="players">
       ${session.players.map((p) => {
         const st = S.playerStats(p.id);
@@ -209,7 +243,7 @@ function viewMesa() {
     <section class="card">
       <h2>Últimos registros</h2>
       <ul class="log">${recent.map((e) => e.type === 'buy'
-        ? `<li class="${e.voided ? 'voided' : ''}"><time>${hour(e.at)}</time> <span>Buy #${e.seq} · <strong>${esc(nameOf(e.playerId))}</strong></span> <span>${money(e.value)}</span></li>`
+        ? `<li class="${e.voided ? 'voided' : ''}"><time>${hour(e.at)}</time> <span>${e.voided ? 'Buy' : `Buy #${e.seq}`} · <strong>${esc(nameOf(e.playerId))}</strong></span> <span>${money(e.value)}</span></li>`
         : `<li class="void"><time>${hour(e.at)}</time> <span>Anulado · <strong>${esc(nameOf(e.playerId))}</strong> — ${esc(e.reason)}</span></li>`).join('')}
       </ul>
     </section>` : ''}`;
@@ -218,7 +252,7 @@ function viewMesa() {
 function viewFechar() {
   const { session, settings } = S.getState();
   if (!session) return viewMesa();
-  const draft = session.draft || { counts: {}, confirmed: {} };
+  const { draft } = session;
   return `
     ${summaryBar()}
     <section class="card">
@@ -237,7 +271,7 @@ function viewFechar() {
         return `
         <article class="close-row" data-row="${p.id}">
           <div class="close-name"><span class="avatar sm">${esc(initial(p.name))}</span>
-            <span><strong>${esc(p.name)}</strong><small>${st.buys} ${st.buys === 1 ? 'buy' : 'buys'} · pagou ${money(st.paid)}</small></span></div>
+            <span><strong>${esc(p.name)}</strong><small>${plural(st.buys, 'buy', 'buys')} · pagou ${money(st.paid)}</small></span></div>
           <label class="count"><span>Fichas</span>
             <input class="field" data-count="${p.id}" inputmode="numeric" pattern="[0-9]*" placeholder="—" value="${c ?? ''}" />
           </label>
@@ -256,14 +290,11 @@ function viewFechar() {
     </div>`;
 }
 
-function readDraft() {
-  return S.getState().session?.draft || { counts: {}, confirmed: {} };
-}
-
+/** Atualiza a tela de fechamento sem recriar os campos (não perde o foco ao digitar). */
 function updateFechar() {
   const { session, settings } = S.getState();
   if (!session) return;
-  const draft = readDraft();
+  const { draft } = session;
   const r = S.settlement(draft.counts);
   const expected = r.totals.chips;
 
@@ -271,6 +302,10 @@ function updateFechar() {
     const el = app.querySelector(`[data-row="${row.playerId}"]`);
     if (!el) continue;
     const has = draft.counts[row.playerId] != null;
+    const input = el.querySelector('[data-count]');
+    if (input !== document.activeElement) input.value = draft.counts[row.playerId] ?? '';
+    const cb = el.querySelector('[data-confirm]');
+    if (cb) cb.checked = Boolean(draft.confirmed[row.playerId]);
     el.querySelector('[data-payout]').textContent = has ? money(row.payout) : '—';
     const netEl = el.querySelector('[data-net]');
     netEl.textContent = has ? signed(row.net) : '';
@@ -287,10 +322,10 @@ function updateFechar() {
 
   let status;
   if (!session.players.length) status = 'Nenhum jogador na mesa.';
-  else if (missing) status = `Contadas <strong>${num(r.counted)}</strong> de <strong>${num(expected)}</strong> fichas · falta contar ${missing} jogador(es).`;
+  else if (missing) status = `Contadas <strong>${num(r.counted)}</strong> de <strong>${num(expected)}</strong> fichas · falta contar ${plural(missing, 'jogador', 'jogadores')}.`;
   else if (r.diff < 0) status = `⚠️ Faltam <strong>${num(-r.diff)}</strong> fichas (${num(r.counted)} de ${num(expected)}). Reconte antes de fechar.`;
   else if (r.diff > 0) status = `⚠️ Sobram <strong>${num(r.diff)}</strong> fichas (${num(r.counted)} de ${num(expected)}). Tem ficha a mais na mesa ou buy sem registro.`;
-  else if (unconfirmed) status = `✅ Contagem bate! Falta ${unconfirmed} jogador(es) marcar “Conferido”.`;
+  else if (unconfirmed) status = `✅ Contagem bate! Falta ${plural(unconfirmed, 'jogador', 'jogadores')} marcar “Conferido”.`;
   else status = `✅ Tudo certo: ${num(expected)} fichas conferidas. Prêmio de ${money(r.totals.prize)}.`;
   app.querySelector('[data-status]').innerHTML = status;
 
@@ -346,7 +381,7 @@ function shareText(s) {
     `Pote: ${money(r.totals.pot)} · ${r.totals.count} buys · Rake: ${money(r.totals.rake)}`,
     '',
     '*Resultado*',
-    ...rows.map((x) => `${signed(x.net)}  ${x.name} (${x.buys} buy${x.buys === 1 ? '' : 's'})`),
+    ...rows.map((x) => `${signed(x.net)}  ${x.name} (${plural(x.buys, 'buy', 'buys')})`),
   ];
   if (cfg.paymentMode === 'caixa') {
     lines.push('', '*Caixa paga*', ...rows.filter((x) => x.payout > 0).map((x) => `${x.name}: ${money(x.payout)}`));
@@ -360,15 +395,46 @@ function viewHistorico() {
   const { history } = S.getState();
   if (!history.length) return `<section class="hero"><h1>Histórico</h1><p class="muted">Nenhuma jogatina encerrada ainda.</p></section>`;
   return `
-    <section class="hero small"><h1>Histórico</h1><p class="muted">${history.length} jogatina(s)</p></section>
+    <section class="hero small"><h1>Histórico</h1><p class="muted">${plural(history.length, 'jogatina', 'jogatinas')}</p></section>
     <section class="history">
       ${history.map((s) => {
         const best = [...s.result.rows].sort((a, b) => b.net - a.net)[0];
         return `<a class="history-item" href="#/resultado/${s.id}">
-          <span><strong>${day(s.startedAt)}</strong><small>${s.players.length} jogadores · ${s.result.totals.count} buys</small></span>
+          <span><strong>${day(s.startedAt)}</strong><small>${plural(s.players.length, 'jogador', 'jogadores')} · ${plural(s.result.totals.count, 'buy', 'buys')}</small></span>
           <span class="right"><strong>${money(s.result.totals.pot)}</strong>${best && best.net > 0 ? `<small>🏆 ${esc(best.name)} ${signed(best.net)}</small>` : ''}</span>
         </a>`;
       }).join('')}
+    </section>`;
+}
+
+function syncSection() {
+  const s = S.syncInfo();
+  if (s.mode === 'local') {
+    return `
+    <section class="card">
+      <h2>Sincronização online</h2>
+      <p class="muted small">Hoje os dados ficam só neste aparelho. Crie um grupo online para todos os celulares verem e lançarem buys na mesma mesa, em tempo real.</p>
+      ${s.hasConfig ? '' : `
+        <details class="setup"><summary>Configurar Firebase (uma vez só)</summary>
+          <p class="muted small">Cole aqui o objeto <code>firebaseConfig</code> do seu projeto Firebase (passo a passo no README).</p>
+          <textarea class="field mono" data-fbconfig rows="7" placeholder='{ "apiKey": "...", "authDomain": "...", "databaseURL": "https://...firebaseio.com", "projectId": "..." }'></textarea>
+        </details>`}
+      <div class="row wrap">
+        <button class="btn primary" data-action="group-create">Criar grupo online</button>
+        <button class="btn" data-action="group-join">Entrar com código</button>
+      </div>
+    </section>`;
+  }
+  const labels = { connecting: 'Conectando…', online: '🟢 Online', offline: '🟠 Sem conexão — os lançamentos serão enviados quando a internet voltar', error: `🔴 Erro: ${esc(s.error)}` };
+  return `
+    <section class="card">
+      <h2>Sincronização online</h2>
+      <p>${labels[s.mode] || ''}</p>
+      <p class="muted small">Código do grupo: <strong class="mono">${esc(s.code)}</strong>. Envie o link abaixo para os amigos — ao abrir, o celular entra no grupo.</p>
+      <div class="row wrap">
+        <button class="btn primary" data-action="group-invite">Compartilhar link do grupo</button>
+        <button class="btn danger" data-action="group-leave">Sair do grupo</button>
+      </div>
     </section>`;
 }
 
@@ -381,12 +447,16 @@ function viewAdmin() {
   }
   const locked = Boolean(session);
   const dis = locked ? 'disabled' : '';
-  const kb = (S.storageSize() / 1024).toFixed(0);
+  const t = S.buyTerms(settings);
+  const rakeField = { perBuy: ['(fichas por buy)', settings.rakeValue, '1'], percent: ['(% do pote)', settings.rakeValue, '0.1'], fixed: ['(R$ na noite)', (settings.rakeValue / 100).toFixed(2), '0.01'], none: ['', 0, '1'] }[settings.rakeMode];
   return `
     <section class="hero small"><h1>Admin</h1><p class="muted">Configurações do grupo</p></section>
+    ${syncSection()}
     <form class="card form" data-form="settings">
       <h2>Grupo</h2>
       <label>Nome do grupo<input class="field" name="groupName" value="${esc(settings.groupName)}" maxlength="40" /></label>
+      <label><span>Jogadores frequentes <small class="muted">— um por linha</small></span>
+        <textarea class="field" name="regulars" rows="6">${esc((settings.regulars || []).join('\n'))}</textarea></label>
 
       <h2>Valores</h2>
       ${locked ? '<p class="notice">🔒 Valores travados durante a jogatina para não misturar buys de preços diferentes. Encerre a jogatina para alterar.</p>' : ''}
@@ -397,13 +467,13 @@ function viewAdmin() {
       <div class="grid2">
         <label>Tipo de rake
           <select class="field" name="rakeMode" ${dis}>
-            ${[['none', 'Sem rake'], ['perBuy', 'Valor por buy (R$)'], ['percent', '% do pote'], ['fixed', 'Valor fixo na noite (R$)']]
+            ${[['perBuy', 'Fichas por buy'], ['percent', '% do pote'], ['fixed', 'Valor fixo na noite (R$)'], ['none', 'Sem rake']]
               .map(([v, l]) => `<option value="${v}" ${settings.rakeMode === v ? 'selected' : ''}>${l}</option>`).join('')}
           </select></label>
-        <label><span>Valor do rake <span data-rake-unit class="muted">${settings.rakeMode === 'percent' ? '(%)' : '(R$)'}</span></span>
-          <input class="field" name="rakeValue" type="number" step="0.01" min="0" inputmode="decimal"
-            value="${settings.rakeMode === 'percent' ? settings.rakeValue : (settings.rakeValue / 100).toFixed(2)}" ${dis} /></label>
+        <label ${settings.rakeMode === 'none' ? 'hidden' : ''}><span>Valor do rake <span class="muted">${rakeField[0]}</span></span>
+          <input class="field" name="rakeValue" type="number" step="${rakeField[2]}" min="0" inputmode="decimal" value="${rakeField[1]}" ${dis} /></label>
       </div>
+      <p class="notice info">Cada buy: <strong>${money(t.value)}</strong> = ${num(settings.chipsPerBuy)} fichas (1 ficha = ${money(Math.round(t.chipValue))})${t.rakeChips ? ` · ${plural(t.rakeChips, 'ficha', 'fichas')} (${money(t.rake)}) vão para o rake · <strong>${num(t.chips)} fichas entram em jogo</strong>` : ''}.</p>
       <label>Como os buys são pagos
         <select class="field" name="paymentMode" ${dis}>
           <option value="acerto" ${settings.paymentMode === 'acerto' ? 'selected' : ''}>Acerto no final (Pix entre jogadores)</option>
@@ -423,7 +493,7 @@ function viewAdmin() {
 
     <section class="card">
       <h2>Backup</h2>
-      <p class="muted small">Os dados ficam salvos neste aparelho (${kb} KB usados). Exporte um backup de vez em quando.</p>
+      <p class="muted small">Exporte um backup de vez em quando (${(S.storageSize() / 1024).toFixed(0)} KB em cache neste aparelho).</p>
       <div class="row wrap">
         <button class="btn" data-action="export">Exportar backup</button>
         <label class="btn">Importar backup<input type="file" accept="application/json,.json" data-import hidden /></label>
@@ -444,16 +514,17 @@ function openBuy(playerId) {
   const { settings } = S.getState();
   const p = S.getPlayer(playerId);
   if (!p) return;
+  const t = S.buyTerms(settings);
   const n = S.playerStats(playerId).buys + 1;
   const needSig = settings.requireSignature;
   openModal(
     `<header><h2>Buy #${n} · ${esc(p.name)}</h2><button class="icon-btn" data-close aria-label="Fechar">✕</button></header>
-     <div class="buy-amount"><strong>${money(settings.buyValue)}</strong><span>${num(settings.chipsPerBuy)} fichas</span></div>
+     <div class="buy-amount"><strong>${money(t.value)}</strong><span>${num(t.chips)} fichas${t.rakeChips ? `<small>+ ${t.rakeChips} de rake</small>` : ''}</span></div>
      ${needSig
        ? `<p class="hint"><strong>${esc(p.name)}</strong>, assine abaixo para confirmar que recebeu as fichas.</p>
           <div class="sigwrap"><canvas class="sig"></canvas><span class="sig-ph">assine aqui</span>
           <button type="button" class="link" data-clear>Limpar</button></div>`
-       : `<p class="hint">Confirme que <strong>${esc(p.name)}</strong> recebeu ${num(settings.chipsPerBuy)} fichas.</p>`}
+       : `<p class="hint">Confirme que <strong>${esc(p.name)}</strong> recebeu ${num(t.chips)} fichas.</p>`}
      <footer><button type="button" class="btn ghost" data-close>Cancelar</button>
        <button type="button" class="btn primary" data-ok ${needSig ? 'disabled' : ''}>Confirmar buy</button></footer>`,
     (root) => {
@@ -489,12 +560,12 @@ function openPlayer(playerId) {
   const entries = session.ledger.filter((e) => e.type === 'buy' && e.playerId === playerId);
   openModal(
     `<header><h2>${esc(p.name)}</h2><button class="icon-btn" data-close aria-label="Fechar">✕</button></header>
-     <p class="muted">${st.buys} ${st.buys === 1 ? 'buy válido' : 'buys válidos'} · ${money(st.paid)}</p>
+     <p class="muted">${plural(st.buys, 'buy válido', 'buys válidos')} · ${money(st.paid)}</p>
      <ul class="entries">
        ${entries.map((e) => `<li class="${e.voided ? 'voided' : ''}">
-          <div><strong>Buy #${e.seq}</strong><small>${hour(e.at)} · ${money(e.value)}</small>
-            ${e.voided ? `<small class="neg">Anulado: ${esc(e.voided.reason)}</small>` : ''}</div>
-          ${e.signature ? `<img src="${e.signature}" alt="Assinatura" />` : '<em class="muted small">sem assinatura</em>'}
+          <div><strong>${e.voided ? 'Buy anulado' : `Buy #${e.seq}`}</strong><small>${hour(e.at)} · ${money(e.value)}</small>
+            ${e.voided ? `<small class="neg">Motivo: ${esc(e.voided.reason)}</small>` : ''}</div>
+          ${sigImg(e)}
           ${e.voided ? '' : `<button class="btn small ghost" data-void="${e.id}">Anular</button>`}
         </li>`).join('') || '<li class="muted">Nenhum buy ainda.</li>'}
      </ul>
@@ -503,6 +574,7 @@ function openPlayer(playerId) {
        <button type="button" class="btn danger" data-remove ${st.buys ? 'disabled title="Anule os buys antes"' : ''}>Remover da mesa</button>
      </footer>`,
     (root) => {
+      loadSignatures(root, session.id);
       root.querySelectorAll('[data-void]').forEach((b) =>
         b.addEventListener('click', async () => {
           if (!(await requireAdmin('anular um buy'))) return openPlayer(playerId);
@@ -540,11 +612,66 @@ function openAudit(sessionId) {
   openModal(
     `<header><h2>Registro de buys</h2><button class="icon-btn" data-close aria-label="Fechar">✕</button></header>
      <ul class="entries">${buys.map((e) => `<li class="${e.voided ? 'voided' : ''}">
-        <div><strong>${esc(nameOf(e.playerId))} · #${e.seq}</strong><small>${hour(e.at)} · ${money(e.value)}</small>
-        ${e.voided ? `<small class="neg">Anulado: ${esc(e.voided.reason)}</small>` : ''}</div>
-        ${e.signature ? `<img src="${e.signature}" alt="Assinatura" />` : '<em class="muted small">sem assinatura</em>'}
+        <div><strong>${esc(nameOf(e.playerId))} · ${e.voided ? 'anulado' : `#${e.seq}`}</strong><small>${hour(e.at)} · ${money(e.value)}</small>
+        ${e.voided ? `<small class="neg">Motivo: ${esc(e.voided.reason)}</small>` : ''}</div>
+        ${sigImg(e)}
       </li>`).join('')}</ul>`,
+    (root) => loadSignatures(root, s.id),
   );
+}
+
+// ---------- Grupo online ----------
+function readPastedConfig() {
+  const raw = app.querySelector('[data-fbconfig]')?.value.trim();
+  if (!raw) return null;
+  // Aceita tanto JSON quanto o trecho JS copiado do console do Firebase.
+  const obj = raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1)
+    .replace(/([{,]\s*)([A-Za-z_]\w*)\s*:/g, '$1"$2":')
+    .replace(/'/g, '"')
+    .replace(/,\s*}/g, '}');
+  try {
+    return JSON.parse(obj);
+  } catch {
+    throw new Error('Não consegui ler a configuração do Firebase colada');
+  }
+}
+
+async function createGroup() {
+  let config;
+  try { config = readPastedConfig(); } catch (err) { return toast(err.message, { type: 'error' }); }
+  if (!S.syncInfo().hasConfig && !config) return toast('Cole a configuração do Firebase primeiro', { type: 'error' });
+  const ok = await confirmDialog('Criar grupo online?', 'Os dados deste aparelho (jogatina atual e histórico) serão enviados para o grupo. Depois é só compartilhar o link com os amigos.', { confirmText: 'Criar grupo' });
+  if (!ok) return;
+  toast('Criando grupo…', { timeout: 15000 });
+  try {
+    await S.createGroup(config);
+    location.hash = '#/admin';
+    location.reload();
+  } catch (err) {
+    toast(`Não foi possível criar: ${err.message}`, { type: 'error', timeout: 8000 });
+  }
+}
+
+async function joinGroup(code, config) {
+  try {
+    await S.joinGroup(code, config);
+    location.reload();
+  } catch (err) {
+    toast(`Não foi possível entrar: ${err.message}`, { type: 'error', timeout: 8000 });
+  }
+}
+
+/** Link de convite: ?g=CODIGO (&c=config, se o Firebase foi configurado pelo Admin). */
+async function handleInviteLink() {
+  const params = new URLSearchParams(location.search);
+  const code = params.get('g');
+  if (!code) return;
+  let config = null;
+  try { config = params.get('c') ? JSON.parse(atob(params.get('c'))) : null; } catch { /* ignora */ }
+  window.history.replaceState(null, '', location.pathname + location.hash);
+  if (S.syncInfo().code === code) return;
+  const ok = await confirmDialog('Entrar no grupo?', 'Este celular vai passar a mostrar e lançar os buys da mesa compartilhada do grupo.', { confirmText: 'Entrar' });
+  if (ok) joinGroup(code, config);
 }
 
 // ---------- Roteamento ----------
@@ -553,32 +680,69 @@ function route() {
   return { name: name || 'mesa', arg };
 }
 
+/** Guarda o que o usuário está digitando para não perder quando outro celular atualizar a tela. */
+function snapshotInputs() {
+  return [...app.querySelectorAll('[data-form] [name]')]
+    .filter((el) => el.dataset.dirty)
+    .map((el) => ({ sel: `[data-form="${el.form.dataset.form}"] [name="${el.name}"]`, value: el.type === 'checkbox' ? el.checked : el.value, focused: el === document.activeElement }));
+}
+function restoreInputs(saved) {
+  for (const s of saved) {
+    const el = app.querySelector(s.sel);
+    if (!el) continue;
+    if (el.type === 'checkbox') el.checked = s.value;
+    else el.value = s.value;
+    el.dataset.dirty = '1';
+    if (s.focused) el.focus();
+  }
+}
+
+let renderedKey = '';
 function render() {
   const { name, arg } = route();
-  const { settings } = S.getState();
+  const { settings, session } = S.getState();
+  renderSync();
   document.getElementById('brand-name').textContent = settings.groupName || 'Poker Night';
   document.querySelectorAll('[data-nav]').forEach((a) => {
     const active = a.dataset.nav === name || (a.dataset.nav === 'historico' && name === 'resultado') || (a.dataset.nav === 'mesa' && name === 'fechar');
     a.classList.toggle('active', active);
   });
+
+  // Na tela de fechamento, só atualiza os números se os jogadores forem os mesmos.
+  const key = `${name}/${arg}/${session?.id}/${session?.players.map((p) => p.id).join(',')}/${settings.requireConfirmAtClose}`;
+  if (name === 'fechar' && session && key === renderedKey) {
+    app.querySelector('.summary').outerHTML = summaryBar();
+    updateFechar();
+    return;
+  }
+  renderedKey = key;
+
+  const saved = snapshotInputs();
   const views = { mesa: viewMesa, fechar: viewFechar, resultado: () => viewResultado(arg), historico: viewHistorico, admin: viewAdmin };
   app.innerHTML = (views[name] || viewMesa)();
   app.dataset.view = name;
-  if (name === 'fechar' && S.getState().session) updateFechar();
+  restoreInputs(saved);
+  if (name === 'fechar' && session) updateFechar();
 }
 
-window.addEventListener('hashchange', () => { adminGateOpen = false; render(); window.scrollTo(0, 0); });
+window.addEventListener('hashchange', () => { adminGateOpen = false; renderedKey = ''; app.innerHTML = ''; render(); window.scrollTo(0, 0); });
 S.subscribe(render);
 
 // ---------- Eventos ----------
+const guarded = new Set(['cancel-session', 'clear-history', 'group-leave']);
 app.addEventListener('click', async (e) => {
   const el = e.target.closest('[data-action]');
   if (!el) return;
   const { action, id, name } = el.dataset;
+  if (guarded.has(action) && !(await requireAdmin('esta ação'))) return;
   switch (action) {
     case 'buy': return openBuy(id);
     case 'player': return openPlayer(id);
-    case 'player-quick': return attempt(() => S.addPlayer(name));
+    case 'player-quick': {
+      const p = attempt(() => S.addPlayer(name));
+      if (p) toast(`${p.name} entrou na mesa`);
+      return;
+    }
     case 'pending-toggle':
       pendingNames = pendingNames.includes(name) ? pendingNames.filter((n) => n !== name) : [...pendingNames, name];
       return render();
@@ -587,16 +751,15 @@ app.addEventListener('click', async (e) => {
       if (S.getState().session) pendingNames = [];
       return render();
     case 'close-session': {
-      const r = S.settlement(readDraft().counts);
+      const r = S.settlement(S.getState().session.draft.counts);
       const ok = await confirmDialog('Encerrar jogatina?', `Pote de <strong>${money(r.totals.pot)}</strong>, ${num(r.totals.chips)} fichas conferidas. Depois de encerrar, não dá mais para lançar buys.`, { confirmText: 'Encerrar' });
       if (!ok) return;
-      const sid = attempt(() => S.closeSession(readDraft().counts));
+      const sid = attempt(() => S.closeSession());
       if (sid) location.hash = `#/resultado/${sid}`;
       return;
     }
     case 'share': {
-      const s = S.getHistorySession(id);
-      const text = shareText(s);
+      const text = shareText(S.getHistorySession(id));
       if (navigator.share) {
         try { await navigator.share({ text }); return; } catch { /* cancelado → copia */ }
       }
@@ -606,6 +769,36 @@ app.addEventListener('click', async (e) => {
     case 'audit': return openAudit(id);
     case 'admin-unlock':
       if (await requireAdmin('abrir as configurações')) { adminGateOpen = true; render(); }
+      return;
+    case 'group-create': return createGroup();
+    case 'group-join': {
+      let config;
+      try { config = readPastedConfig(); } catch (err) { return toast(err.message, { type: 'error' }); }
+      const code = await ask({ title: 'Entrar em um grupo', body: 'Cole o código ou o link do grupo.', input: 'placeholder="Código ou link" autocapitalize="off"', confirmText: 'Entrar' });
+      if (!code) return;
+      let c = code;
+      let cfg = config;
+      try {
+        const u = new URL(code);
+        c = u.searchParams.get('g') || code;
+        if (u.searchParams.get('c')) cfg = JSON.parse(atob(u.searchParams.get('c')));
+      } catch { /* não é link */ }
+      return joinGroup(c, cfg);
+    }
+    case 'group-invite': {
+      const link = S.inviteLink();
+      const text = `♠ Entra no grupo do poker: ${link}`;
+      if (navigator.share) {
+        try { await navigator.share({ text }); return; } catch { /* cancelado → copia */ }
+      }
+      try { await navigator.clipboard.writeText(link); toast('Link copiado — mande no grupo'); } catch { await ask({ title: 'Link do grupo', input: `value="${esc(link)}" readonly`, confirmText: 'OK' }); }
+      return;
+    }
+    case 'group-leave':
+      if (await confirmDialog('Sair do grupo?', 'Este celular volta a usar só os dados locais. Os dados do grupo continuam online para os outros.', { confirmText: 'Sair', danger: true })) {
+        S.leaveGroup();
+        location.reload();
+      }
       return;
     case 'export': {
       const blob = new Blob([S.exportData()], { type: 'application/json' });
@@ -623,7 +816,7 @@ app.addEventListener('click', async (e) => {
       }
       return;
     case 'clear-history':
-      if (await confirmDialog('Apagar histórico?', 'Todas as jogatinas encerradas serão apagadas deste aparelho. Exporte um backup antes.', { confirmText: 'Apagar tudo', danger: true })) {
+      if (await confirmDialog('Apagar histórico?', 'Todas as jogatinas encerradas serão apagadas. Exporte um backup antes.', { confirmText: 'Apagar tudo', danger: true })) {
         S.clearHistory();
         toast('Histórico apagado');
       }
@@ -637,6 +830,7 @@ app.addEventListener('submit', (e) => {
   if (!form) return;
   e.preventDefault();
   const data = new FormData(form);
+  form.querySelectorAll('[data-dirty]').forEach((el) => delete el.dataset.dirty);
   switch (form.dataset.form) {
     case 'pending-add': {
       const n = String(data.get('name') || '').trim().replace(/\s+/g, ' ');
@@ -659,21 +853,23 @@ app.addEventListener('submit', (e) => {
       const { session } = S.getState();
       const patch = {
         groupName: String(data.get('groupName') || '').trim() || 'Poker Night',
+        regulars: String(data.get('regulars') || '').split(/[\n,]/).map((n) => n.trim().replace(/\s+/g, ' ')).filter(Boolean),
         requireSignature: data.get('requireSignature') === 'on',
         requireConfirmAtClose: data.get('requireConfirmAtClose') === 'on',
         adminPin: String(data.get('adminPin') || '').trim(),
       };
       if (!session) {
         const rakeMode = data.get('rakeMode');
-        const rakeRaw = data.get('rakeValue');
+        const rakeRaw = parseFloat(String(data.get('rakeValue') ?? '0').replace(',', '.')) || 0;
         Object.assign(patch, {
           buyValue: toCents(data.get('buyValue')),
           chipsPerBuy: Math.max(1, parseInt(data.get('chipsPerBuy'), 10) || 1),
           rakeMode,
-          rakeValue: rakeMode === 'percent' ? Math.min(100, Math.max(0, parseFloat(rakeRaw) || 0)) : toCents(rakeRaw),
+          rakeValue: { perBuy: Math.max(0, Math.round(rakeRaw)), percent: Math.min(100, Math.max(0, rakeRaw)), fixed: toCents(rakeRaw), none: 0 }[rakeMode],
           paymentMode: data.get('paymentMode'),
         });
         if (patch.buyValue <= 0) return toast('O valor do buy precisa ser maior que zero', { type: 'error' });
+        if (rakeMode === 'perBuy' && patch.rakeValue >= patch.chipsPerBuy) return toast('O rake precisa ser menor que as fichas do buy', { type: 'error' });
       }
       if (patch.adminPin) adminUnlockedUntil = Date.now() + 10 * 60 * 1000;
       S.updateSettings(patch);
@@ -685,55 +881,42 @@ app.addEventListener('submit', (e) => {
 });
 
 app.addEventListener('input', (e) => {
-  const countId = e.target.dataset.count;
+  const t = e.target;
+  if (t.name && t.closest('[data-form]')) t.dataset.dirty = '1';
+  const countId = t.dataset.count;
   if (!countId) return;
-  const digits = e.target.value.replace(/\D/g, '');
-  e.target.value = digits;
-  const draft = readDraft();
-  const before = draft.counts[countId];
-  if (digits === '') delete draft.counts[countId];
-  else draft.counts[countId] = parseInt(digits, 10);
-  // Se a contagem mudou depois de conferida, exige nova conferência.
-  if (before !== draft.counts[countId] && draft.confirmed[countId]) {
-    delete draft.confirmed[countId];
-    const cb = app.querySelector(`[data-confirm="${countId}"]`);
-    if (cb) cb.checked = false;
-  }
-  S.saveDraft(draft);
-  updateFechar();
+  const digits = t.value.replace(/\D/g, '');
+  t.value = digits;
+  // A mudança de contagem desmarca o "Conferido" daquele jogador (feito no store).
+  S.setCount(countId, digits === '' ? null : parseInt(digits, 10));
 });
 
 app.addEventListener('change', async (e) => {
   const t = e.target;
   if (t.dataset.confirm) {
-    const draft = readDraft();
+    const { draft } = S.getState().session;
     if (t.checked && draft.counts[t.dataset.confirm] == null) {
       t.checked = false;
       return toast('Digite as fichas antes de conferir', { type: 'error' });
     }
-    if (t.checked) draft.confirmed[t.dataset.confirm] = Date.now();
-    else delete draft.confirmed[t.dataset.confirm];
-    S.saveDraft(draft);
-    updateFechar();
+    S.setConfirmed(t.dataset.confirm, t.checked);
   } else if (t.name === 'rakeMode') {
-    app.querySelector('[data-rake-unit]').textContent = t.value === 'percent' ? '(%)' : '(R$)';
+    // Re-renderiza para trocar a unidade do rake, mantendo o que foi digitado.
+    t.dataset.dirty = '1';
+    const rake = app.querySelector('[name="rakeValue"]');
+    if (rake) rake.value = t.value === 'fixed' ? '0.00' : '0';
+    rake?.closest('label')?.toggleAttribute('hidden', t.value === 'none');
+    const unit = rake?.closest('label')?.querySelector('.muted');
+    if (rake) rake.step = { percent: '0.1', fixed: '0.01' }[t.value] || '1';
+    if (unit) unit.textContent = { perBuy: '(fichas por buy)', percent: '(% do pote)', fixed: '(R$ na noite)' }[t.value] || '';
   } else if (t.matches('[data-import]') && t.files[0]) {
     const text = await t.files[0].text();
-    if (await confirmDialog('Importar backup?', 'Os dados atuais deste aparelho serão substituídos pelos do arquivo.', { confirmText: 'Importar', danger: true })) {
+    if (await confirmDialog('Importar backup?', 'Os dados atuais serão substituídos pelos do arquivo.', { confirmText: 'Importar', danger: true })) {
       attempt(() => { S.importData(text); toast('Backup importado'); });
     }
     t.value = '';
   }
 });
 
-// Protege a área de admin e exclusões com o PIN.
-const guarded = new Set(['cancel-session', 'clear-history']);
-app.addEventListener('click', async (e) => {
-  const el = e.target.closest('[data-action]');
-  if (el && guarded.has(el.dataset.action) && !el.dataset.unlocked) {
-    e.stopImmediatePropagation();
-    if (await requireAdmin('esta ação')) { el.dataset.unlocked = '1'; el.click(); delete el.dataset.unlocked; }
-  }
-}, { capture: true });
-
 render();
+handleInviteLink();

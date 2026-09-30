@@ -1,219 +1,435 @@
-// Estado da aplicação + persistência no localStorage do aparelho.
+// Estado da aplicação. Os dados formam uma árvore:
+//   settings · session{players{}, ledger{}, draft{}} · history{} · signatures{sessão{buy}}
+// Toda alteração vira um conjunto de caminhos → valores ("updates"), aplicado localmente
+// e, se houver grupo online, enviado ao Firebase. Assim dois celulares lançando buys
+// ao mesmo tempo nunca sobrescrevem um ao outro.
 import { activeBuys, computeSettlement, computeTotals } from './calc.js';
+import { connect } from './sync.js';
+import { firebaseConfig as bundledConfig } from './firebase-config.js';
 
-const KEY = 'poker-night:v1';
+const LOCAL_KEY = 'poker-night:v2';
+const LEGACY_KEY = 'poker-night:v1';
+const GROUP_KEY = 'poker-night:group'; // { code, config }
+const SETTINGS_VERSION = 2;
 
 export const DEFAULT_SETTINGS = {
+  version: SETTINGS_VERSION,
   groupName: 'Poker dos Amigos',
-  buyValue: 5000, // centavos
-  chipsPerBuy: 1000,
-  rakeMode: 'none', // none | perBuy | percent | fixed
-  rakeValue: 0, // centavos (perBuy / fixed) ou porcentagem (percent)
+  buyValue: 3000, // centavos
+  chipsPerBuy: 60, // fichas que o buy representa (incluindo as do rake)
+  rakeMode: 'perBuy', // none | perBuy (fichas por buy) | percent | fixed (centavos)
+  rakeValue: 5,
   paymentMode: 'acerto', // acerto (Pix no final) | caixa (buy pago na hora)
   requireSignature: true,
   requireConfirmAtClose: true,
   adminPin: '',
+  regulars: ['Tico', 'Ian', 'Giovanni', 'Davi', 'Marlon', 'Titã', 'Maciel', 'Nikin', 'Jota', 'Kevin', 'Felipin'],
 };
 
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
+const clean = (v) => (v === undefined ? null : JSON.parse(JSON.stringify(v)));
 const listeners = new Set();
-let state = load();
 
-function load() {
+// ---------- Conexão ----------
+const group = readJSON(GROUP_KEY);
+const cacheKey = group ? `poker-night:cache:${group.code}` : LOCAL_KEY;
+let tree = loadTree();
+let view = derive(tree);
+let remote = null;
+let sync = { mode: group ? 'connecting' : 'local', code: group?.code ?? null, error: null };
+
+function readJSON(key) {
   try {
-    const raw = localStorage.getItem(KEY);
-    if (raw) return normalize(JSON.parse(raw));
-  } catch (err) {
-    console.error('Falha ao carregar dados', err);
+    return JSON.parse(localStorage.getItem(key) || 'null');
+  } catch {
+    return null;
   }
-  return normalize({});
 }
 
-function normalize(data) {
-  return {
-    settings: { ...DEFAULT_SETTINGS, ...(data.settings || {}) },
-    session: data.session ?? null,
-    history: Array.isArray(data.history) ? data.history : [],
+function loadTree() {
+  const data = readJSON(cacheKey) || (!group && migrateLegacy()) || {};
+  return { settings: data.settings ?? null, session: data.session ?? null, history: data.history ?? null, signatures: data.signatures ?? null };
+}
+
+/** Converte os dados da v1 (arrays) para a árvore da v2. */
+function migrateLegacy() {
+  const old = readJSON(LEGACY_KEY);
+  if (!old) return null;
+  const toMap = (arr) => Object.fromEntries((arr || []).map((x) => [x.id, x]));
+  const signatures = {};
+  const convert = (s) => {
+    signatures[s.id] = {};
+    for (const e of s.ledger || []) {
+      if (e.signature) signatures[s.id][e.id] = e.signature;
+      delete e.signature;
+    }
+    return { ...s, players: toMap(s.players), ledger: toMap(s.ledger) };
   };
+  return clean({
+    settings: old.settings,
+    session: old.session ? convert(old.session) : null,
+    history: toMap((old.history || []).map(convert)),
+    signatures,
+  });
 }
 
-function commit({ silent = false } = {}) {
+function settingsOf(raw) {
+  // Configurações antigas (v1) são substituídas pelas novas regras do grupo.
+  if (!raw || (raw.version ?? 1) < SETTINGS_VERSION) return { ...DEFAULT_SETTINGS, groupName: raw?.groupName ?? DEFAULT_SETTINGS.groupName, adminPin: raw?.adminPin ?? '' };
+  return { ...DEFAULT_SETTINGS, ...raw, regulars: raw.regulars ?? [] };
+}
+
+function sessionOf(raw) {
+  if (!raw) return null;
+  const players = Object.values(raw.players || {}).sort((a, b) => a.joinedAt - b.joinedAt);
+  const ledger = Object.values(raw.ledger || {}).map((e) => ({ ...e })).sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : 1));
+  // Numeração dos buys válidos de cada jogador (anulados ficam sem número).
+  const seq = {};
+  for (const e of ledger) {
+    if (e.type === 'buy') e.seq = e.voided ? null : (seq[e.playerId] = (seq[e.playerId] || 0) + 1);
+  }
+  const draft = { counts: { ...(raw.draft?.counts || {}) }, confirmed: { ...(raw.draft?.confirmed || {}) } };
+  return { ...raw, players, ledger, draft };
+}
+
+function derive(t) {
+  const history = Object.values(t.history || {})
+    .map((s) => {
+      const x = sessionOf(s);
+      x.result = { ...x.result, rows: x.result?.rows || [], transfers: x.result?.transfers || [] };
+      return x;
+    })
+    .sort((a, b) => b.closedAt - a.closedAt);
+  return { settings: settingsOf(t.settings), session: sessionOf(t.session), history };
+}
+
+function saveLocal() {
   try {
-    localStorage.setItem(KEY, JSON.stringify(state));
+    // Online, as assinaturas ficam no servidor; não ocupam espaço no aparelho.
+    const data = remote ? { ...tree, signatures: null } : tree;
+    localStorage.setItem(cacheKey, JSON.stringify(data));
   } catch (err) {
     alert('Não foi possível salvar no aparelho (armazenamento cheio?). Exporte um backup em Admin.');
-    throw err;
   }
-  if (!silent) listeners.forEach((fn) => fn(state));
 }
 
-// Mantém abas/janelas do mesmo aparelho sincronizadas.
+function notify() {
+  view = derive(tree);
+  listeners.forEach((fn) => fn(view));
+}
+
+function setPath(obj, path, value) {
+  const keys = path.split('/');
+  const last = keys.pop();
+  let cur = obj;
+  for (const k of keys) {
+    if (cur[k] == null || typeof cur[k] !== 'object') {
+      if (value === null) return;
+      cur[k] = {};
+    }
+    cur = cur[k];
+  }
+  if (value === null) delete cur[last];
+  else cur[last] = value;
+}
+
+function apply(updates) {
+  const cleaned = Object.fromEntries(Object.entries(updates).map(([k, v]) => [k, clean(v)]));
+  for (const [path, value] of Object.entries(cleaned)) setPath(tree, path, value);
+  saveLocal();
+  notify();
+  remote?.update(cleaned).catch((err) => {
+    sync = { ...sync, error: err.message };
+    notify();
+  });
+}
+
+if (group) {
+  const config = bundledConfig || group.config;
+  connect(config, group.code, {
+    onStatus: (mode) => {
+      sync = { ...sync, mode, error: mode === 'online' ? null : sync.error };
+      notify();
+    },
+    onData: (key, value) => {
+      tree[key] = value;
+      saveLocal();
+      notify();
+    },
+    onError: (err) => {
+      sync = { ...sync, mode: 'error', error: err.message };
+      notify();
+    },
+  })
+    .then((r) => { remote = r; })
+    .catch((err) => {
+      sync = { ...sync, mode: 'error', error: err.message };
+      notify();
+    });
+}
+
+// Mantém abas do mesmo aparelho sincronizadas (modo local).
 window.addEventListener('storage', (e) => {
-  if (e.key !== KEY) return;
-  state = load();
-  listeners.forEach((fn) => fn(state));
+  if (e.key !== cacheKey || remote) return;
+  tree = loadTree();
+  notify();
 });
 
-export const getState = () => state;
+export const getState = () => view;
 export const subscribe = (fn) => listeners.add(fn);
-export const storageSize = () => (localStorage.getItem(KEY) || '').length;
+export const storageSize = () => (localStorage.getItem(cacheKey) || '').length;
+export const syncInfo = () => ({ ...sync, hasConfig: Boolean(bundledConfig || group?.config) });
 
 function requireSession() {
-  if (!state.session) throw new Error('Nenhuma jogatina em andamento');
-  return state.session;
+  if (!view.session) throw new Error('Nenhuma jogatina em andamento');
+  return view.session;
 }
 
-function log(type, data) {
-  const entry = { id: uid(), type, at: Date.now(), ...data };
-  state.session.ledger.push(entry);
-  return entry;
-}
+const entry = (type, data) => ({ id: uid(), type, at: Date.now(), ...data });
+const ledgerPath = (e) => ({ [`session/ledger/${e.id}`]: e });
 
 // ---------- Configurações ----------
 export function updateSettings(patch) {
-  state.settings = { ...state.settings, ...patch };
-  commit();
+  const updates = {};
+  const current = view.settings;
+  // Se ainda estava na versão antiga, grava a configuração inteira.
+  if ((tree.settings?.version ?? 1) < SETTINGS_VERSION) updates.settings = { ...current, ...patch };
+  else for (const [k, v] of Object.entries(patch)) updates[`settings/${k}`] = v;
+  apply(updates);
+}
+
+/** Fichas que entram em jogo por buy (descontando as do rake). */
+export function buyTerms(settings = view.settings) {
+  const { buyValue, chipsPerBuy, rakeMode, rakeValue } = settings;
+  const rakeChips = rakeMode === 'perBuy' ? Math.min(Math.max(0, Math.round(rakeValue)), chipsPerBuy - 1) : 0;
+  return {
+    value: buyValue,
+    chips: chipsPerBuy - rakeChips,
+    rakeChips,
+    rake: Math.round((rakeChips * buyValue) / chipsPerBuy),
+    chipValue: buyValue / chipsPerBuy,
+  };
 }
 
 // ---------- Jogatina ----------
-export function startSession(names = []) {
-  if (state.session) throw new Error('Já existe uma jogatina em andamento');
-  state.session = { id: uid(), startedAt: Date.now(), players: [], ledger: [], draft: { counts: {}, confirmed: {} } };
-  names.forEach((n) => addPlayerRaw(n));
-  commit();
+function normName(raw) {
+  const name = String(raw || '').trim().replace(/\s+/g, ' ');
+  if (!name) throw new Error('Informe o nome do jogador');
+  return name;
 }
 
-function addPlayerRaw(rawName) {
-  const session = requireSession();
-  const name = String(rawName || '').trim().replace(/\s+/g, ' ');
-  if (!name) throw new Error('Informe o nome do jogador');
-  if (session.players.some((p) => p.name.toLowerCase() === name.toLowerCase())) {
-    throw new Error(`"${name}" já está na mesa`);
+function newPlayer(rawName, players) {
+  const name = normName(rawName);
+  if (players.some((p) => p.name.toLowerCase() === name.toLowerCase())) throw new Error(`"${name}" já está na mesa`);
+  return { id: uid(), name, joinedAt: Date.now() };
+}
+
+export function startSession(names = []) {
+  if (view.session) throw new Error('Já existe uma jogatina em andamento');
+  const players = [];
+  const ledger = [];
+  for (const n of names) {
+    const p = newPlayer(n, players);
+    p.joinedAt += players.length; // mantém a ordem
+    players.push(p);
+    ledger.push(entry('player_add', { playerId: p.id, name: p.name }));
   }
-  const player = { id: uid(), name, joinedAt: Date.now() };
-  session.players.push(player);
-  log('player_add', { playerId: player.id, name });
-  return player;
+  const session = {
+    id: uid(),
+    startedAt: Date.now(),
+    players: Object.fromEntries(players.map((p) => [p.id, p])),
+    ledger: Object.fromEntries(ledger.map((e) => [e.id, e])),
+  };
+  apply({ session });
 }
 
 export function addPlayer(name) {
-  const p = addPlayerRaw(name);
-  commit();
+  const session = requireSession();
+  const p = newPlayer(name, session.players);
+  apply({ [`session/players/${p.id}`]: p, ...ledgerPath(entry('player_add', { playerId: p.id, name: p.name })) });
   return p;
 }
 
 export function renamePlayer(playerId, newName) {
   const session = requireSession();
-  const name = String(newName || '').trim().replace(/\s+/g, ' ');
-  if (!name) throw new Error('Informe o nome');
+  const name = normName(newName);
   if (session.players.some((p) => p.id !== playerId && p.name.toLowerCase() === name.toLowerCase())) {
     throw new Error(`"${name}" já está na mesa`);
   }
   const p = getPlayer(playerId);
-  log('player_rename', { playerId, from: p.name, to: name });
-  p.name = name;
-  commit();
+  apply({ [`session/players/${playerId}/name`]: name, ...ledgerPath(entry('player_rename', { playerId, from: p.name, to: name })) });
 }
 
 export function removePlayer(playerId) {
   const session = requireSession();
   if (activeBuys(session.ledger, playerId).length) throw new Error('Anule os buys antes de remover o jogador');
   const p = getPlayer(playerId);
-  session.players = session.players.filter((x) => x.id !== playerId);
-  log('player_remove', { playerId, name: p.name });
-  commit();
+  apply({
+    [`session/players/${playerId}`]: null,
+    [`session/draft/counts/${playerId}`]: null,
+    [`session/draft/confirmed/${playerId}`]: null,
+    ...ledgerPath(entry('player_remove', { playerId, name: p.name })),
+  });
 }
 
-export const getPlayer = (playerId) => state.session?.players.find((p) => p.id === playerId);
+export const getPlayer = (playerId) => view.session?.players.find((p) => p.id === playerId);
 
 export function addBuy(playerId, signature) {
   const session = requireSession();
-  const { buyValue, chipsPerBuy, rakeMode, rakeValue, requireSignature } = state.settings;
   if (!getPlayer(playerId)) throw new Error('Jogador não encontrado');
-  if (requireSignature && !signature) throw new Error('Assinatura obrigatória');
-  const entry = log('buy', {
-    playerId,
-    seq: activeBuys(session.ledger, playerId).length + 1,
-    value: buyValue,
-    chips: chipsPerBuy,
-    rake: rakeMode === 'perBuy' ? Math.min(rakeValue, buyValue) : 0,
-    signature: signature || null,
-  });
-  commit();
-  return entry;
+  if (view.settings.requireSignature && !signature) throw new Error('Assinatura obrigatória');
+  const t = buyTerms();
+  const e = entry('buy', { playerId, value: t.value, chips: t.chips, rake: t.rake, rakeChips: t.rakeChips, signed: Boolean(signature) });
+  const updates = ledgerPath(e);
+  if (signature) updates[`signatures/${session.id}/${e.id}`] = signature;
+  // Qualquer buy novo invalida a conferência daquele jogador.
+  updates[`session/draft/confirmed/${playerId}`] = null;
+  apply(updates);
+  return { ...e, seq: activeBuys(session.ledger, playerId).length + 1 };
 }
 
 /** Buys nunca são apagados: são anulados com motivo e ficam no registro. */
 export function voidBuy(entryId, reason) {
   const session = requireSession();
-  const entry = session.ledger.find((e) => e.id === entryId && e.type === 'buy');
-  if (!entry || entry.voided) return;
-  entry.voided = { at: Date.now(), reason: String(reason || '').trim() || 'Sem motivo' };
-  log('void', { refId: entryId, playerId: entry.playerId, reason: entry.voided.reason });
-  commit();
+  const e = session.ledger.find((x) => x.id === entryId && x.type === 'buy');
+  if (!e || e.voided) return;
+  const why = String(reason || '').trim() || 'Sem motivo';
+  apply({
+    [`session/ledger/${entryId}/voided`]: { at: Date.now(), reason: why },
+    [`session/draft/confirmed/${e.playerId}`]: null,
+    ...ledgerPath(entry('void', { refId: entryId, playerId: e.playerId, reason: why })),
+  });
+}
+
+const sigCache = new Map();
+export async function getSignature(sessionId, entryId) {
+  const key = `${sessionId}/${entryId}`;
+  if (sigCache.has(key)) return sigCache.get(key);
+  let value = tree.signatures?.[sessionId]?.[entryId] ?? null;
+  if (!value && remote) value = await remote.get(`signatures/${key}`);
+  if (value) sigCache.set(key, value);
+  return value;
 }
 
 export function playerStats(playerId) {
-  const buys = activeBuys(state.session?.ledger || [], playerId);
+  const buys = activeBuys(view.session?.ledger || [], playerId);
   return { buys: buys.length, paid: buys.reduce((a, b) => a + b.value, 0) };
 }
 
-export const totals = () => computeTotals(state.session?.ledger || [], state.settings);
+export const totals = () => computeTotals(view.session?.ledger || [], view.settings);
 
 // ---------- Fechamento ----------
-export function saveDraft(draft) {
-  requireSession().draft = draft;
-  commit({ silent: true });
+export function setCount(playerId, chips) {
+  requireSession();
+  apply({ [`session/draft/counts/${playerId}`]: chips, [`session/draft/confirmed/${playerId}`]: null });
 }
 
-export const settlement = (counts) => computeSettlement(requireSession(), state.settings, counts);
+export function setConfirmed(playerId, ok) {
+  requireSession();
+  apply({ [`session/draft/confirmed/${playerId}`]: ok ? Date.now() : null });
+}
 
-export function closeSession(counts) {
+export const settlement = (counts) => computeSettlement(requireSession(), view.settings, counts);
+
+export function closeSession() {
   const session = requireSession();
-  const result = settlement(counts);
+  const result = settlement(session.draft.counts);
   if (result.diff !== 0) throw new Error('A contagem de fichas não bate com o total em jogo');
-  session.closedAt = Date.now();
-  session.settingsAtClose = { ...state.settings, adminPin: undefined };
-  session.result = result;
-  delete session.draft;
-  state.history.unshift(session);
-  state.session = null;
-  commit();
+  const raw = tree.session;
+  const closed = {
+    id: session.id,
+    startedAt: session.startedAt,
+    closedAt: Date.now(),
+    players: raw.players,
+    ledger: raw.ledger,
+    result,
+    settingsAtClose: { ...view.settings, adminPin: null, regulars: null },
+  };
+  apply({ [`history/${session.id}`]: closed, session: null });
   return session.id;
 }
 
 export function cancelSession() {
-  state.session = null;
-  commit();
+  const id = view.session?.id;
+  apply({ session: null, ...(id ? { [`signatures/${id}`]: null } : {}) });
 }
 
-export const getHistorySession = (id) => state.history.find((s) => s.id === id);
-
-export function deleteHistorySession(id) {
-  state.history = state.history.filter((s) => s.id !== id);
-  commit();
-}
+export const getHistorySession = (id) => view.history.find((s) => s.id === id);
 
 export function clearHistory() {
-  state.history = [];
-  commit();
+  apply({ history: null, signatures: null });
 }
 
-/** Nomes que mais jogaram, para adicionar com um toque. */
-export function frequentPlayers(limit = 12) {
+/** Frequentes (cadastrados no Admin) primeiro, depois quem mais jogou. */
+export function frequentPlayers(limit = 20) {
   const freq = new Map();
-  for (const s of state.history) {
-    for (const p of s.players) freq.set(p.name, (freq.get(p.name) || 0) + 1);
-  }
-  return [...freq.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([n]) => n);
+  for (const s of view.history) for (const p of s.players) freq.set(p.name, (freq.get(p.name) || 0) + 1);
+  const byFreq = [...freq.entries()].sort((a, b) => b[1] - a[1]).map(([n]) => n);
+  const seen = new Set();
+  return [...(view.settings.regulars || []), ...byFreq]
+    .filter((n) => !seen.has(n.toLowerCase()) && seen.add(n.toLowerCase()))
+    .slice(0, limit);
+}
+
+// ---------- Grupo online ----------
+function groupConfig(config) {
+  const c = bundledConfig || config;
+  if (!c?.databaseURL) throw new Error('Configuração do Firebase ausente ou sem "databaseURL"');
+  return c;
+}
+
+const withTimeout = (promise, ms = 15000) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('sem resposta do Firebase — confira a databaseURL, as regras e a internet')), ms)),
+  ]);
+
+const newCode = () => Array.from(crypto.getRandomValues(new Uint8Array(10)), (b) => 'abcdefghjkmnpqrstuvwxyz23456789'[b % 31]).join('');
+
+/** Cria um grupo online a partir dos dados deste aparelho. */
+export async function createGroup(config) {
+  const cfg = groupConfig(config);
+  const code = newCode();
+  const r = await withTimeout(connect(cfg, code));
+  await withTimeout(r.set(clean({ ...tree, settings: view.settings, createdAt: Date.now() })));
+  localStorage.setItem(GROUP_KEY, JSON.stringify({ code, config: bundledConfig ? null : cfg }));
+  return code;
+}
+
+export async function joinGroup(code, config) {
+  const cfg = groupConfig(config);
+  const clean_ = String(code || '').trim().toLowerCase();
+  if (!/^[a-z0-9]{6,}$/.test(clean_)) throw new Error('Código de grupo inválido');
+  const r = await withTimeout(connect(cfg, clean_));
+  const exists = await withTimeout(r.get('settings'));
+  if (!exists) throw new Error('Grupo não encontrado');
+  localStorage.setItem(GROUP_KEY, JSON.stringify({ code: clean_, config: bundledConfig ? null : cfg }));
+}
+
+export function leaveGroup() {
+  localStorage.removeItem(GROUP_KEY);
+}
+
+export function inviteLink() {
+  if (!group) return null;
+  const url = new URL(location.href.split('#')[0]);
+  url.search = '';
+  url.searchParams.set('g', group.code);
+  if (!bundledConfig && group.config) url.searchParams.set('c', btoa(JSON.stringify(group.config)));
+  return url.toString();
 }
 
 // ---------- Backup ----------
-export const exportData = () => JSON.stringify({ app: 'poker-night', version: 1, exportedAt: Date.now(), ...state }, null, 2);
+export const exportData = () =>
+  JSON.stringify({ app: 'poker-night', version: 2, exportedAt: Date.now(), ...tree, settings: view.settings }, null, 2);
 
 export function importData(json) {
   const data = JSON.parse(json);
   if (data.app !== 'poker-night') throw new Error('Arquivo não é um backup do Poker Night');
-  state = normalize(data);
-  commit();
+  if ((data.version ?? 1) < 2) {
+    localStorage.setItem(LEGACY_KEY, json);
+    const migrated = migrateLegacy();
+    Object.assign(data, migrated);
+  }
+  apply({ settings: data.settings, session: data.session ?? null, history: data.history ?? null, signatures: data.signatures ?? null });
 }

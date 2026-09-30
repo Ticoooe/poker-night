@@ -284,3 +284,23 @@ dialog::backdrop { background: rgb(0 0 0 / 0.6); backdrop-filter: blur(3px); }
 #toast.error { background: var(--red); color: #fff; }
 #toast button { background: none; border: 0; color: #b8862b; font: inherit; font-weight: 800; cursor: pointer; padding: 4px; }
 main[data-view='fechar'] ~ #toast { bottom: 200px; }
+
+/* ---------- Sincronização ---------- */
+.brand { display: flex; align-items: center; gap: 6px; min-width: 0; }
+#brand-name { overflow: hidden; text-overflow: ellipsis; }
+.sync { flex-shrink: 0; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); opacity: 0.5; }
+.sync.online { background: var(--green); opacity: 1; box-shadow: 0 0 0 3px rgb(61 220 132 / 0.2); }
+.sync.connecting { background: var(--gold); opacity: 1; animation: pulse 1s infinite alternate; }
+.sync.offline { background: #f59e0b; opacity: 1; }
+.sync.error { background: var(--red); opacity: 1; }
+@keyframes pulse { to { opacity: 0.3; } }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+textarea.field { resize: vertical; line-height: 1.4; }
+.setup { margin: 4px 0 14px; }
+.setup summary { cursor: pointer; font-weight: 600; margin-bottom: 8px; }
+.setup textarea { font-size: 13px; }
+.notice.info { background: var(--bg); color: var(--muted); }
+.notice.info strong { color: var(--text); }
+.buy-amount span { display: flex; flex-direction: column; align-items: flex-end; }
+.buy-amount small { font-size: 0.8rem; font-weight: 500; }
+.card > p:first-of-type:not(.muted) { margin-top: 0; }

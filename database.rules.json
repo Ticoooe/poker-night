@@ -1,0 +1,12 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "groups": {
+      "$group": {
+        ".read": "$group.length >= 8",
+        ".write": "$group.length >= 8"
+      }
+    }
+  }
+}

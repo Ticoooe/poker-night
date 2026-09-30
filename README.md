@@ -12,7 +12,32 @@ Controle das noites de poker com os amigos: buys por jogador, pote sempre visív
 4. **Finalizar jogatina:** conte as fichas de cada um, digite, e o jogador marca *Conferido*. Só dá para encerrar quando **a soma bate exatamente** com as fichas em jogo.
 5. **Resultado:** quanto cada um recebe, o saldo e a lista mínima de Pix. Botão para compartilhar no grupo do WhatsApp.
 
-**Admin (⚙︎):** nome do grupo, valor do buy, fichas por buy, rake (por buy, % do pote ou fixo), forma de pagamento, PIN do admin, backup.
+**Admin (⚙︎):** nome do grupo, jogadores frequentes, valor do buy, fichas por buy, rake (fichas por buy, % do pote ou fixo), forma de pagamento, PIN do admin, sincronização online e backup.
+
+### Regras atuais do grupo
+
+- **Buy:** R$ 30,00 = 60 fichas (1 ficha = R$ 0,50)
+- **Rake:** 5 fichas por buy (R$ 2,50) → **55 fichas entram em jogo** por buy
+- No fechamento, o total contado precisa ser `55 × número de buys`.
+- **Frequentes:** Tico, Ian, Giovanni, Davi, Marlon, Titã, Maciel, Nikin, Jota, Kevin, Felipin
+
+## Sincronização online (vários celulares)
+
+Com a sincronização ligada, todos os celulares do grupo veem a mesma mesa em tempo real: qualquer um pode lançar buys, e a contagem do fechamento aparece para todos. O ponto no topo mostra o status (🟢 online · 🟠 sem conexão · ⚪ só neste aparelho).
+
+Cada buy é gravado como um registro separado, então dois celulares lançando ao mesmo tempo **nunca sobrescrevem** um ao outro. Sem internet, os lançamentos ficam na fila e sobem quando a conexão volta.
+
+### Configuração (uma vez só, ~5 min, grátis)
+
+1. Acesse https://console.firebase.google.com e crie um projeto (ex.: `poker-night`). Pode desativar o Google Analytics.
+2. No menu **Criação → Realtime Database → Criar banco de dados**. Escolha a localização (Estados Unidos) e **modo bloqueado**.
+3. Na aba **Regras**, cole o conteúdo de [`database.rules.json`](database.rules.json) e clique em **Publicar**.
+4. Em **⚙︎ Configurações do projeto → Seus apps**, clique no ícone **Web `</>`**, registre o app (sem Hosting) e copie o objeto `firebaseConfig`. Confira que ele tem `databaseURL` (se não tiver, copie a URL que aparece no topo da página do Realtime Database e adicione).
+5. Salve o `firebaseConfig` em [`js/firebase-config.js`](js/firebase-config.js) (ou cole em **Admin → Sincronização → Configurar Firebase**).
+6. No celular do "caixa": **Admin → Criar grupo online**. Os dados atuais sobem para o grupo.
+7. **Compartilhar link do grupo** → mande no WhatsApp. Quem abrir o link entra no grupo.
+
+> Segurança: o banco só aceita leitura/escrita dentro de `groups/<código>`, e o código é aleatório (10 caracteres). Quem não tem o link não acessa. Use o PIN do admin para proteger anulações e configurações.
 
 > Dica: no celular, use "Adicionar à tela de início" para abrir como app.
 
@@ -40,8 +65,8 @@ Controle das noites de poker com os amigos: buys por jogador, pote sempre visív
 ## Detalhes técnicos
 
 - HTML + CSS + JavaScript puro (ES modules), sem build. Hospedado no GitHub Pages.
-- Dados salvos no `localStorage` do aparelho que controla a mesa (use sempre o mesmo celular/tablet como "caixa"). Backup/importação em JSON pelo Admin.
-- `js/calc.js` — cálculos puros (pote, rake, divisão, acertos) · `js/store.js` — estado e persistência · `js/app.js` — interface · `js/signature.js` — campo de assinatura.
+- Sem grupo online, os dados ficam no `localStorage` do aparelho. Com grupo, ficam no Firebase Realtime Database (com cache local). Backup/importação em JSON pelo Admin.
+- `js/calc.js` — cálculos puros (pote, rake, divisão, acertos) · `js/store.js` — estado, escrita granular e sincronização · `js/sync.js` — conexão com o Firebase · `js/app.js` — interface · `js/signature.js` — campo de assinatura.
 
 ### Rodar localmente
 
@@ -52,6 +77,5 @@ npm test    # testes dos cálculos
 
 ### Próximos passos possíveis
 
-- Sincronizar entre vários celulares em tempo real (ex.: Supabase/Firebase), para cada jogador acompanhar do próprio aparelho.
 - Ranking/estatísticas acumuladas por jogador ao longo das noites.
 - Confirmação do buy por PIN pessoal de cada jogador, como alternativa à assinatura.
