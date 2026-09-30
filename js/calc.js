@@ -95,3 +95,31 @@ export function computeSettlement(session, settings, counts) {
   if (totals.rake > 0) parts.push({ name: 'Casa (rake)', net: totals.rake });
   return { totals, counted, diff: counted - totals.chips, rows, transfers: computeTransfers(parts) };
 }
+
+/**
+ * Ranking acumulado a partir das partidas encerradas. Jogadores são agrupados pelo nome
+ * (sem diferenciar maiúsculas). Ganhos = soma das noites positivas; perdas = das negativas.
+ */
+export function computeRanking(sessions) {
+  const map = new Map();
+  for (const s of sessions) {
+    for (const r of s.result?.rows || []) {
+      const key = r.name.trim().toLowerCase();
+      const p = map.get(key) || { name: r.name, games: 0, buys: 0, gains: 0, losses: 0, net: 0, wins: 0, best: 0 };
+      p.games += 1;
+      p.buys += r.buys;
+      p.net += r.net;
+      if (r.net > 0) { p.gains += r.net; p.wins += 1; }
+      if (r.net < 0) p.losses += r.net;
+      p.best = Math.max(p.best, r.net);
+      map.set(key, p);
+    }
+  }
+  return [...map.values()].sort((a, b) => b.net - a.net || b.gains - a.gains || a.name.localeCompare(b.name));
+}
+
+/** Chave do mês (AAAA-MM, horário local) de um timestamp. */
+export const monthKey = (ts) => {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+};

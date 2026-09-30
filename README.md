@@ -19,7 +19,9 @@ Controle das noites de poker com os amigos: buys por jogador, pote sempre visív
    Davi - R$ 5,00
    Rake (fica no caixa): R$ 10,00
    ```
-6. **Histórico:** todas as partidas encerradas. Dá para apagar uma partida específica (🗑 na lista ou *Apagar partida* no resultado; pede o PIN, se houver).
+6. **Histórico → Partidas:** as partidas encerradas, agrupadas por mês, com o campeão de cada mês (ou quem está liderando o mês atual).
+7. **Histórico → Ranking:** ranking **geral** e de **cada mês**, com ganhos (soma das noites no positivo), perdas (soma das noites no negativo), saldo, jogos e vitórias. Botão para compartilhar no grupo.
+8. **Apagar partida:** dá para apagar uma partida específica (🗑 na lista ou *Apagar partida* no resultado; pede o PIN, se houver).
 
 **Admin (⚙︎):** nome do grupo, jogadores frequentes, caixa (nome + WhatsApp), chaves Pix dos jogadores, valor do buy, fichas por buy, rake (fichas por buy, % do pote ou fixo), forma de pagamento, PIN do admin, sincronização online e backup.
 

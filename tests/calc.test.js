@@ -65,3 +65,16 @@ test('regra do grupo: buy R$30 = 60 fichas, 5 de rake (R$2,50) → 55 em jogo', 
   assert.deepEqual(r.rows.map((x) => x.payout), [7500, 0, 3500]);
   assert.deepEqual(r.rows.map((x) => x.net), [4500, -6000, 500]);
 });
+
+test('ranking soma ganhos, perdas e saldo por jogador entre partidas', async () => {
+  const { computeRanking } = await import('../js/calc.js');
+  const night = (rows) => ({ result: { rows } });
+  const r = computeRanking([
+    night([{ name: 'Tico', buys: 1, net: 4500 }, { name: 'Ian', buys: 2, net: -6000 }]),
+    night([{ name: 'tico', buys: 2, net: -3000 }, { name: 'Ian', buys: 1, net: 2000 }]),
+  ]);
+  assert.deepEqual(r.map((p) => [p.name, p.games, p.gains, p.losses, p.net, p.wins]), [
+    ['Tico', 2, 4500, -3000, 1500, 1],
+    ['Ian', 2, 2000, -6000, -4000, 1],
+  ]);
+});

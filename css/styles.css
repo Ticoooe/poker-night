@@ -325,3 +325,29 @@ details.card[open] > summary h2 { margin-bottom: 12px; }
 .history-row { display: flex; gap: 8px; align-items: stretch; }
 .history-row .history-item { flex: 1; min-width: 0; }
 .icon-btn.trash { width: 48px; height: auto; border-radius: var(--radius); border: 1px solid var(--line); background: var(--felt); font-size: 1.1rem; }
+
+/* ---------- Histórico mensal / ranking ---------- */
+.tabs { display: flex; gap: 4px; padding: 4px; background: var(--felt); border: 1px solid var(--line); border-radius: 14px; }
+.tabs a { flex: 1; text-align: center; padding: 10px; border-radius: 10px; font-weight: 700; color: var(--muted); }
+.tabs a.active { background: var(--felt-2); color: var(--text); }
+.month { display: flex; flex-direction: column; gap: 10px; }
+.month-head { display: flex; justify-content: space-between; gap: 12px; padding: 4px 4px 0; }
+.month-head > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.month-head strong { font-size: 1.05rem; }
+.month-head small { color: var(--muted); font-size: 0.8rem; }
+.month-head .right { text-align: right; align-items: flex-end; }
+.month-head .right strong { font-size: 0.92rem; color: var(--gold); }
+.link-like { text-decoration: underline; }
+.periods { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 2px; scrollbar-width: none; }
+.periods .chip { display: inline-flex; align-items: center; white-space: nowrap; flex-shrink: 0; }
+.ranking .pos-cell { width: 36px; font-size: 1.05rem; text-align: left; padding-left: 0; }
+.ranking tr > :nth-child(2) { text-align: left; white-space: normal; }
+.ranking tr > :first-child { padding-right: 4px; }
+.ranking .sub { display: block; color: var(--muted); font-size: 0.75rem; font-weight: 400; }
+.ranking td.pos, .ranking td.neg { font-size: 0.85rem; }
+.ranking td, .ranking th { padding-left: 4px; padding-right: 4px; }
+.ranking tr > :last-child { padding-right: 0; }
+@media (max-width: 420px) {
+  .ranking { font-size: 0.85rem; }
+  .ranking td.pos, .ranking td.neg { font-size: 0.8rem; }
+}

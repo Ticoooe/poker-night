@@ -1,5 +1,6 @@
 import * as S from './store.js';
 import { SignaturePad } from './signature.js';
+import { computeRanking, monthKey } from './calc.js';
 
 const app = document.getElementById('app');
 const dlg = document.getElementById('modal');
@@ -439,20 +440,123 @@ function shareText(s) {
   return lines.join('\n');
 }
 
+const monthLabel = (key) => {
+  const [y, m] = key.split('-').map(Number);
+  const label = new Date(y, m - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+  return label.charAt(0).toUpperCase() + label.slice(1);
+};
+const monthShort = (key) => {
+  const [y, m] = key.split('-').map(Number);
+  const label = new Date(y, m - 1, 1).toLocaleDateString('pt-BR', { month: 'short' }).replace('.', '');
+  return `${label.charAt(0).toUpperCase()}${label.slice(1)} ${y}`;
+};
+const amount = (cents) => (cents / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const medal = (i) => ['🥇', '🥈', '🥉'][i] || `${i + 1}º`;
+
+/** Partidas agrupadas por mês (mais recente primeiro). */
+function byMonth(history) {
+  const groups = new Map();
+  for (const s of history) {
+    const k = monthKey(s.startedAt);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(s);
+  }
+  return [...groups.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
+}
+
+function historyTabs(active) {
+  return `<nav class="tabs" aria-label="Histórico">
+    <a href="#/historico" class="${active === 'partidas' ? 'active' : ''}">Partidas</a>
+    <a href="#/ranking/geral" class="${active === 'ranking' ? 'active' : ''}">Ranking</a>
+  </nav>`;
+}
+
 function viewHistorico() {
   const { history } = S.getState();
   if (!history.length) return `<section class="hero"><h1>Histórico</h1><p class="muted">Nenhuma jogatina encerrada ainda.</p></section>`;
+  const current = monthKey(Date.now());
   return `
     <section class="hero small"><h1>Histórico</h1><p class="muted">${plural(history.length, 'jogatina', 'jogatinas')}</p></section>
-    <section class="history">
-      ${history.map((s) => {
-        const best = [...s.result.rows].sort((a, b) => b.net - a.net)[0];
-        return `<div class="history-row"><a class="history-item" href="#/resultado/${s.id}">
-          <span><strong>${day(s.startedAt)}</strong><small>${plural(s.players.length, 'jogador', 'jogadores')} · ${plural(s.result.totals.count, 'buy', 'buys')}</small></span>
-          <span class="right"><strong>${money(s.result.totals.pot)}</strong>${best && best.net > 0 ? `<small>🏆 ${esc(best.name)} ${signed(best.net)}</small>` : ''}</span>
-        </a><button class="icon-btn trash" data-action="delete-session" data-id="${s.id}" aria-label="Apagar partida de ${day(s.startedAt)}" title="Apagar partida">🗑</button></div>`;
-      }).join('')}
-    </section>`;
+    ${historyTabs('partidas')}
+    ${byMonth(history).map(([key, sessions]) => {
+      const champ = computeRanking(sessions)[0];
+      const pot = sessions.reduce((a, x) => a + x.result.totals.pot, 0);
+      return `
+      <section class="month">
+        <a class="month-head" href="#/ranking/${key}">
+          <span><strong>${monthLabel(key)}</strong><small>${plural(sessions.length, 'partida', 'partidas')} · ${money(pot)} em jogo${key === current ? ' · em andamento' : ''}</small></span>
+          <span class="right">${champ && champ.net > 0 ? `<small>${key === current ? 'Liderando' : 'Campeão do mês'}</small><strong>🏆 ${esc(champ.name)} ${signed(champ.net)}</strong>` : ''}<small class="link-like">Ranking do mês →</small></span>
+        </a>
+        <div class="history">
+          ${sessions.map((x) => {
+            const best = [...x.result.rows].sort((a, b) => b.net - a.net)[0];
+            return `<div class="history-row"><a class="history-item" href="#/resultado/${x.id}">
+              <span><strong>${day(x.startedAt)}</strong><small>${plural(x.players.length, 'jogador', 'jogadores')} · ${plural(x.result.totals.count, 'buy', 'buys')}</small></span>
+              <span class="right"><strong>${money(x.result.totals.pot)}</strong>${best && best.net > 0 ? `<small>🏆 ${esc(best.name)} ${signed(best.net)}</small>` : ''}</span>
+            </a><button class="icon-btn trash" data-action="delete-session" data-id="${x.id}" aria-label="Apagar partida de ${day(x.startedAt)}" title="Apagar partida">🗑</button></div>`;
+          }).join('')}
+        </div>
+      </section>`;
+    }).join('')}`;
+}
+
+function rankingData(period) {
+  const { history } = S.getState();
+  const sessions = period === 'geral' ? history : history.filter((x) => monthKey(x.startedAt) === period);
+  return { sessions, rows: computeRanking(sessions) };
+}
+
+function viewRanking(period = 'geral') {
+  const { history } = S.getState();
+  if (!history.length) return `<section class="hero"><h1>Ranking</h1><p class="muted">O ranking aparece depois da primeira jogatina encerrada.</p></section>`;
+  const months = byMonth(history).map(([k]) => k);
+  if (period !== 'geral' && !months.includes(period)) period = 'geral';
+  const { sessions, rows } = rankingData(period);
+  const current = monthKey(Date.now());
+  const pot = sessions.reduce((a, x) => a + x.result.totals.pot, 0);
+  const rake = sessions.reduce((a, x) => a + x.result.totals.rake, 0);
+  const title = period === 'geral' ? 'Ranking geral' : monthLabel(period);
+  const status = period === 'geral' ? `desde ${day(sessions[sessions.length - 1].startedAt)}` : period === current ? 'mês em andamento' : 'mês encerrado';
+  return `
+    <section class="hero small"><h1>Histórico</h1></section>
+    ${historyTabs('ranking')}
+    <div class="chips periods">
+      <a class="chip ${period === 'geral' ? 'on' : ''}" href="#/ranking/geral">Geral</a>
+      ${months.map((k) => `<a class="chip ${period === k ? 'on' : ''}" href="#/ranking/${k}">${monthShort(k)}</a>`).join('')}
+    </div>
+    <section class="summary three">
+      <div class="stat main"><span>${esc(title)}</span><strong>${plural(sessions.length, 'partida', 'partidas')}</strong></div>
+      <div class="stat"><span>Em jogo</span><strong>${money(pot)}</strong></div>
+      <div class="stat"><span>Rake</span><strong>${money(rake)}</strong></div>
+      <div class="stat"><span>Jogadores</span><strong>${rows.length}</strong></div>
+    </section>
+    <p class="session-meta">${esc(status)}${period !== 'geral' && period !== current && rows[0]?.net > 0 ? ` · 🏆 Campeão: <strong>${esc(rows[0].name)}</strong>` : ''}</p>
+    <section class="card">
+      <div class="table-wrap"><table class="results ranking">
+        <thead><tr><th>#</th><th>Jogador</th><th class="hide-xs">Jogos</th><th>Ganhos</th><th>Perdas</th><th>Saldo</th></tr></thead>
+        <tbody>${rows.map((p, i) => `<tr>
+          <td class="pos-cell">${medal(i)}</td>
+          <td><strong>${esc(p.name)}</strong><small class="sub">${plural(p.games, 'jogo', 'jogos')} · ${plural(p.wins, 'vitória', 'vitórias')}</small></td>
+          <td class="hide-xs">${p.games}</td>
+          <td class="pos">${p.gains ? amount(p.gains) : '—'}</td>
+          <td class="neg">${p.losses ? amount(-p.losses) : '—'}</td>
+          <td class="${netClass(p.net)}"><strong>${signed(p.net)}</strong></td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+      <p class="muted small">Valores em R$. Ganhos = soma das noites no positivo · Perdas = soma das noites no negativo · Saldo = ganhos − perdas.</p>
+    </section>
+    <button class="btn block" data-action="share-ranking" data-id="${period}">Compartilhar ranking</button>`;
+}
+
+function rankingText(period) {
+  const { rows, sessions } = rankingData(period);
+  const title = period === 'geral' ? 'Ranking geral' : `Ranking de ${monthLabel(period).toLowerCase()}`;
+  return [
+    `♠ ${S.getState().settings.groupName} — ${title}`,
+    `${plural(sessions.length, 'partida', 'partidas')}`,
+    '',
+    ...rows.map((p, i) => `${medal(i)} ${p.name}: ${signed(p.net)} (ganhos ${money(p.gains)} · perdas ${money(-p.losses)})`),
+  ].join('\n');
 }
 
 function syncSection() {
@@ -769,7 +873,7 @@ function render() {
   renderSync();
   document.getElementById('brand-name').textContent = settings.groupName || 'Poker Night';
   document.querySelectorAll('[data-nav]').forEach((a) => {
-    const active = a.dataset.nav === name || (a.dataset.nav === 'historico' && name === 'resultado') || (a.dataset.nav === 'mesa' && name === 'fechar');
+    const active = a.dataset.nav === name || (a.dataset.nav === 'historico' && (name === 'resultado' || name === 'ranking')) || (a.dataset.nav === 'mesa' && name === 'fechar');
     a.classList.toggle('active', active);
   });
 
@@ -783,7 +887,7 @@ function render() {
   renderedKey = key;
 
   const saved = snapshotInputs();
-  const views = { mesa: viewMesa, fechar: viewFechar, resultado: () => viewResultado(arg), historico: viewHistorico, admin: viewAdmin };
+  const views = { mesa: viewMesa, fechar: viewFechar, resultado: () => viewResultado(arg), historico: viewHistorico, ranking: () => viewRanking(arg), admin: viewAdmin };
   app.innerHTML = (views[name] || viewMesa)();
   app.dataset.view = name;
   restoreInputs(saved);
@@ -832,6 +936,14 @@ app.addEventListener('click', async (e) => {
       return;
     }
     case 'audit': return openAudit(id);
+    case 'share-ranking': {
+      const text = rankingText(id);
+      if (navigator.share) {
+        try { await navigator.share({ text }); return; } catch { /* cancelado → copia */ }
+      }
+      try { await navigator.clipboard.writeText(text); toast('Ranking copiado — cole no grupo'); } catch { toast('Não foi possível copiar', { type: 'error' }); }
+      return;
+    }
     case 'copy-caixa': {
       try { await navigator.clipboard.writeText(caixaMessage(S.getHistorySession(id))); toast('Mensagem copiada'); } catch { toast('Não foi possível copiar', { type: 'error' }); }
       return;
