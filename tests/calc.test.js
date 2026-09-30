@@ -78,3 +78,10 @@ test('ranking soma ganhos, perdas e saldo por jogador entre partidas', async () 
     ['Ian', 2, 2000, -6000, -4000, 1],
   ]);
 });
+
+test('buy aguardando aprovação não entra no pote até ser aprovado', () => {
+  const ledger = [buy('a'), buy('a', 5000, 1000, { pending: true })];
+  assert.equal(computeTotals(ledger, base).pot, 5000);
+  delete ledger[1].pending;
+  assert.equal(computeTotals(ledger, base).pot, 10000);
+});

@@ -3,13 +3,14 @@
 // Toda alteração vira um conjunto de caminhos → valores ("updates"), aplicado localmente
 // e, se houver grupo online, enviado ao Firebase. Assim dois celulares lançando buys
 // ao mesmo tempo nunca sobrescrevem um ao outro.
-import { activeBuys, computeSettlement, computeTotals } from './calc.js';
+import { activeBuys, computeSettlement, computeTotals, pendingBuys as pendingOf } from './calc.js';
 import { connect } from './sync.js';
 import { firebaseConfig as bundledConfig } from './firebase-config.js';
 
 const LOCAL_KEY = 'poker-night:v2';
 const LEGACY_KEY = 'poker-night:v1';
 const GROUP_KEY = 'poker-night:group'; // { code, config }
+const ADMIN_DEVICE_KEY = 'poker-night:admin-device'; // PIN salvo só no aparelho do admin
 const SETTINGS_VERSION = 2;
 
 export const DEFAULT_SETTINGS = {
@@ -22,6 +23,7 @@ export const DEFAULT_SETTINGS = {
   paymentMode: 'acerto', // acerto (Pix no final) | caixa (buy pago na hora)
   requireSignature: true,
   requireConfirmAtClose: true,
+  requireApproval: true, // buy só vale depois que o admin aprova
   adminPin: '',
   caixaName: '',
   caixaPhone: '', // WhatsApp de quem cuida do caixa
@@ -89,7 +91,7 @@ function sessionOf(raw) {
   // Numeração dos buys válidos de cada jogador (anulados ficam sem número).
   const seq = {};
   for (const e of ledger) {
-    if (e.type === 'buy') e.seq = e.voided ? null : (seq[e.playerId] = (seq[e.playerId] || 0) + 1);
+    if (e.type === 'buy') e.seq = e.voided || e.pending ? null : (seq[e.playerId] = (seq[e.playerId] || 0) + 1);
   }
   const draft = { counts: { ...(raw.draft?.counts || {}) }, confirmed: { ...(raw.draft?.confirmed || {}) } };
   return { ...raw, players, ledger, draft };
@@ -302,13 +304,52 @@ export function addBuy(playerId, signature) {
   if (!getPlayer(playerId)) throw new Error('Jogador não encontrado');
   if (view.settings.requireSignature && !signature) throw new Error('Assinatura obrigatória');
   const t = buyTerms();
-  const e = entry('buy', { playerId, value: t.value, chips: t.chips, rake: t.rake, rakeChips: t.rakeChips, signed: Boolean(signature) });
+  const pending = Boolean(view.settings.requireApproval);
+  const e = entry('buy', { playerId, value: t.value, chips: t.chips, rake: t.rake, rakeChips: t.rakeChips, signed: Boolean(signature), ...(pending ? { pending: true } : {}) });
   const updates = ledgerPath(e);
   if (signature) updates[`signatures/${session.id}/${e.id}`] = signature;
   // Qualquer buy novo invalida a conferência daquele jogador.
   updates[`session/draft/confirmed/${playerId}`] = null;
   apply(updates);
   return { ...e, seq: activeBuys(session.ledger, playerId).length + 1 };
+}
+
+export const pendingBuys = () => pendingOf(view.session?.ledger || []);
+
+/** Admin certifica o buy: só a partir daqui ele entra no pote. */
+export function approveBuy(entryId) {
+  const e = view.session?.ledger.find((x) => x.id === entryId && x.type === 'buy');
+  if (!e?.pending || e.voided) return false;
+  apply({
+    [`session/ledger/${entryId}/pending`]: null,
+    [`session/ledger/${entryId}/approvedAt`]: Date.now(),
+    [`session/draft/confirmed/${e.playerId}`]: null,
+    ...ledgerPath(entry('approve', { refId: entryId, playerId: e.playerId })),
+  });
+  return true;
+}
+
+export function rejectBuy(entryId, reason) {
+  const e = view.session?.ledger.find((x) => x.id === entryId && x.type === 'buy');
+  if (!e?.pending || e.voided) return false;
+  const why = `Recusado pelo admin${reason ? `: ${String(reason).trim()}` : ''}`;
+  apply({
+    [`session/ledger/${entryId}/pending`]: null,
+    [`session/ledger/${entryId}/voided`]: { at: Date.now(), reason: why },
+    ...ledgerPath(entry('void', { refId: entryId, playerId: e.playerId, reason: why })),
+  });
+  return true;
+}
+
+// ---------- Aparelho do admin ----------
+export const isAdminDevice = () => {
+  const pin = view.settings.adminPin;
+  return Boolean(pin) && localStorage.getItem(ADMIN_DEVICE_KEY) === pin;
+};
+export function setAdminDevice(on) {
+  if (on) localStorage.setItem(ADMIN_DEVICE_KEY, view.settings.adminPin);
+  else localStorage.removeItem(ADMIN_DEVICE_KEY);
+  notify();
 }
 
 /** Buys nunca são apagados: são anulados com motivo e ficam no registro. */
@@ -335,8 +376,9 @@ export async function getSignature(sessionId, entryId) {
 }
 
 export function playerStats(playerId) {
-  const buys = activeBuys(view.session?.ledger || [], playerId);
-  return { buys: buys.length, paid: buys.reduce((a, b) => a + b.value, 0) };
+  const ledger = view.session?.ledger || [];
+  const buys = activeBuys(ledger, playerId);
+  return { buys: buys.length, paid: buys.reduce((a, b) => a + b.value, 0), pending: pendingOf(ledger, playerId).length };
 }
 
 export const totals = () => computeTotals(view.session?.ledger || [], view.settings);
@@ -356,6 +398,7 @@ export const settlement = (counts) => computeSettlement(requireSession(), view.s
 
 export function closeSession() {
   const session = requireSession();
+  if (pendingBuys().length) throw new Error('Há buys aguardando aprovação do admin');
   const result = settlement(session.draft.counts);
   if (result.diff !== 0) throw new Error('A contagem de fichas não bate com o total em jogo');
   const raw = tree.session;

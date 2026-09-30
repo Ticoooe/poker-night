@@ -351,3 +351,17 @@ details.card[open] > summary h2 { margin-bottom: 12px; }
   .ranking { font-size: 0.85rem; }
   .ranking td.pos, .ranking td.neg { font-size: 0.8rem; }
 }
+
+/* ---------- Aprovação de buys ---------- */
+.pending-card { border-color: rgb(245 158 11 / 0.6); background: linear-gradient(180deg, rgb(245 158 11 / 0.1), var(--felt)); }
+.pending-card h2 { color: #f59e0b; margin-bottom: 4px; }
+.pending-card > p { margin: 0 0 8px; }
+.approvals li { flex-wrap: wrap; }
+.approve-actions { display: flex; gap: 8px; width: 100%; }
+.approve-actions .btn { flex: 1; min-height: 44px; }
+.approvals img { height: 52px; }
+.wait { color: #f59e0b; font-style: normal; font-weight: 600; }
+.approvals li > .approve-actions { flex: 1 1 100%; }
+.approvals li > div:first-child { flex: 1 1 auto; }
+#toast { width: max-content; }
+.approvals .approve-actions { flex-direction: row; }

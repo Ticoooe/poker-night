@@ -4,10 +4,17 @@
 export const clamp = (n, min, max) => Math.min(Math.max(n, min), max);
 export const sum = (arr, fn = (x) => x) => arr.reduce((acc, x) => acc + fn(x), 0);
 
-/** Buys válidos (não anulados), opcionalmente de um jogador. */
+/** Buys válidos (aprovados e não anulados), opcionalmente de um jogador. */
 export function activeBuys(ledger, playerId) {
   return ledger.filter(
-    (e) => e.type === 'buy' && !e.voided && (playerId == null || e.playerId === playerId),
+    (e) => e.type === 'buy' && !e.voided && !e.pending && (playerId == null || e.playerId === playerId),
+  );
+}
+
+/** Buys pedidos que ainda esperam aprovação do admin. */
+export function pendingBuys(ledger, playerId) {
+  return ledger.filter(
+    (e) => e.type === 'buy' && !e.voided && e.pending && (playerId == null || e.playerId === playerId),
   );
 }
 

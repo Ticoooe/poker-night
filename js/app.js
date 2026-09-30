@@ -100,7 +100,7 @@ const confirmDialog = (title, body, opts = {}) => ask({ title, body, ...opts });
 let adminUnlockedUntil = 0;
 async function requireAdmin(motivo) {
   const pin = S.getState().settings.adminPin;
-  if (!pin || Date.now() < adminUnlockedUntil) return true;
+  if (!pin || S.isAdminDevice() || Date.now() < adminUnlockedUntil) return true;
   const ok = await ask({
     title: 'PIN do administrador',
     body: `Necessário para ${esc(motivo)}.`,
@@ -181,6 +181,30 @@ function renderSync() {
   syncEl.setAttribute('aria-label', syncEl.title);
 }
 
+/** Buys pedidos que aguardam o admin (aparece na mesa e no Admin). */
+function pendingSection() {
+  const { session } = S.getState();
+  const pending = S.pendingBuys();
+  if (!session || !pending.length) return '';
+  const admin = S.isAdminDevice();
+  const nameOf = (id) => session.players.find((p) => p.id === id)?.name ?? '—';
+  return `
+    <section class="card pending-card" aria-live="polite">
+      <h2>⏳ Aguardando aprovação (${pending.length})</h2>
+      <p class="muted small">${admin ? 'Confira a assinatura e se as fichas foram entregues.' : 'O admin precisa aprovar. O buy só entra no pote depois disso.'}</p>
+      <ul class="entries approvals">
+        ${pending.map((e) => `<li>
+          <div><strong>${esc(nameOf(e.playerId))}</strong><small>Pedido às ${hour(e.at)} · ${money(e.value)} · ${num(e.chips)} fichas</small></div>
+          ${sigImg(e)}
+          <div class="approve-actions">
+            <button class="btn small danger" data-action="reject-buy" data-id="${e.id}">Recusar</button>
+            <button class="btn small primary" data-action="approve-buy" data-id="${e.id}">${admin ? '' : '🔒 '}Aprovar</button>
+          </div>
+        </li>`).join('')}
+      </ul>
+    </section>`;
+}
+
 // ---------- Views ----------
 let pendingNames = [];
 
@@ -218,6 +242,7 @@ function viewMesa() {
   return `
     ${summaryBar()}
     <p class="session-meta">Começou ${hour(session.startedAt)} · ${termsLine(settings)}</p>
+    ${pendingSection()}
     <section class="players">
       ${session.players.map((p) => {
         const st = S.playerStats(p.id);
@@ -225,7 +250,7 @@ function viewMesa() {
         <article class="player">
           <button class="player-info" data-action="player" data-id="${p.id}" aria-label="Detalhes de ${esc(p.name)}">
             <span class="avatar">${esc(initial(p.name))}</span>
-            <span class="pname"><strong>${esc(p.name)}</strong><small>${money(st.paid)}</small></span>
+            <span class="pname"><strong>${esc(p.name)}</strong><small>${money(st.paid)}${st.pending ? ` <em class="wait">+${st.pending} aguardando</em>` : ''}</small></span>
           </button>
           <div class="buycount" title="Buys">${chipsPips(st.buys)}<strong>${st.buys}</strong><small>${st.buys === 1 ? 'buy' : 'buys'}</small></div>
           <button class="btn-buy" data-action="buy" data-id="${p.id}">+ Buy</button>
@@ -244,7 +269,7 @@ function viewMesa() {
     <section class="card">
       <h2>Últimos registros</h2>
       <ul class="log">${recent.map((e) => e.type === 'buy'
-        ? `<li class="${e.voided ? 'voided' : ''}"><time>${hour(e.at)}</time> <span>${e.voided ? 'Buy' : `Buy #${e.seq}`} · <strong>${esc(nameOf(e.playerId))}</strong></span> <span>${money(e.value)}</span></li>`
+        ? `<li class="${e.voided ? 'voided' : ''}"><time>${hour(e.at)}</time> <span>${e.voided ? 'Buy' : e.pending ? '⏳ Pedido de buy' : `Buy #${e.seq}`} · <strong>${esc(nameOf(e.playerId))}</strong></span> <span>${money(e.value)}</span></li>`
         : `<li class="void"><time>${hour(e.at)}</time> <span>Anulado · <strong>${esc(nameOf(e.playerId))}</strong> — ${esc(e.reason)}</span></li>`).join('')}
       </ul>
     </section>` : ''}`;
@@ -315,6 +340,7 @@ function updateFechar() {
   }
 
   const missing = session.players.filter((p) => draft.counts[p.id] == null).length;
+  const waiting = S.pendingBuys().length;
   const unconfirmed = settings.requireConfirmAtClose ? session.players.filter((p) => !draft.confirmed[p.id]).length : 0;
   const pct = expected ? Math.min(100, (r.counted / expected) * 100) : 0;
   const bar = app.querySelector('[data-progress]');
@@ -323,6 +349,7 @@ function updateFechar() {
 
   let status;
   if (!session.players.length) status = 'Nenhum jogador na mesa.';
+  else if (waiting) status = `⏳ ${plural(waiting, 'buy aguardando', 'buys aguardando')} aprovação do admin. Aprove ou recuse na mesa antes de fechar.`;
   else if (missing) status = `Contadas <strong>${num(r.counted)}</strong> de <strong>${num(expected)}</strong> fichas · falta contar ${plural(missing, 'jogador', 'jogadores')}.`;
   else if (r.diff < 0) status = `⚠️ Faltam <strong>${num(-r.diff)}</strong> fichas (${num(r.counted)} de ${num(expected)}). Reconte antes de fechar.`;
   else if (r.diff > 0) status = `⚠️ Sobram <strong>${num(r.diff)}</strong> fichas (${num(r.counted)} de ${num(expected)}). Tem ficha a mais na mesa ou buy sem registro.`;
@@ -330,7 +357,7 @@ function updateFechar() {
   else status = `✅ Tudo certo: ${num(expected)} fichas conferidas. Prêmio de ${money(r.totals.prize)}.`;
   app.querySelector('[data-status]').innerHTML = status;
 
-  app.querySelector('[data-action="close-session"]').disabled = !(session.players.length && !missing && r.diff === 0 && !unconfirmed);
+  app.querySelector('[data-action="close-session"]').disabled = !(session.players.length && !waiting && !missing && r.diff === 0 && !unconfirmed);
 }
 
 /** Quem paga e quem recebe no acerto pelo caixa. */
@@ -593,7 +620,7 @@ function syncSection() {
 let adminGateOpen = false;
 function viewAdmin() {
   const { settings, session, history } = S.getState();
-  if (settings.adminPin && Date.now() >= adminUnlockedUntil && !adminGateOpen) {
+  if (settings.adminPin && !S.isAdminDevice() && Date.now() >= adminUnlockedUntil && !adminGateOpen) {
     return `<section class="hero"><h1>Admin</h1><p class="muted">Área protegida por PIN.</p>
       <button class="btn primary big" data-action="admin-unlock">Desbloquear</button></section>`;
   }
@@ -603,6 +630,17 @@ function viewAdmin() {
   const rakeField = { perBuy: ['(fichas por buy)', settings.rakeValue, '1'], percent: ['(% do pote)', settings.rakeValue, '0.1'], fixed: ['(R$ na noite)', (settings.rakeValue / 100).toFixed(2), '0.01'], none: ['', 0, '1'] }[settings.rakeMode];
   return `
     <section class="hero small"><h1>Admin</h1><p class="muted">Configurações do grupo</p></section>
+    ${pendingSection()}
+    <section class="card">
+      <h2>Aparelho do administrador</h2>
+      ${!settings.adminPin
+        ? '<p class="muted small">Defina um PIN do admin (abaixo, em Segurança) para escolher o aparelho que aprova os buys.</p>'
+        : S.isAdminDevice()
+          ? `<p>✅ Este aparelho é do admin: recebe os pedidos de buy, avisa quando chega um novo e aprova sem pedir o PIN.</p>
+             <button class="btn" data-action="admin-device-off">Deixar de ser o aparelho do admin</button>`
+          : `<p class="muted small">Use no celular de quem aprova os buys. Nos outros aparelhos, aprovar pede o PIN.</p>
+             <button class="btn primary" data-action="admin-device-on">Usar este aparelho como admin</button>`}
+    </section>
     ${syncSection()}
     <form class="card form" data-form="settings">
       <h2>Grupo</h2>
@@ -645,6 +683,7 @@ function viewAdmin() {
 
       <h2>Conferência</h2>
       <label class="switch"><input type="checkbox" name="requireSignature" ${settings.requireSignature ? 'checked' : ''} /> Exigir assinatura do jogador em cada buy</label>
+      <label class="switch"><input type="checkbox" name="requireApproval" ${settings.requireApproval ? 'checked' : ''} /> Cada buy precisa ser aprovado pelo admin</label>
       <label class="switch"><input type="checkbox" name="requireConfirmAtClose" ${settings.requireConfirmAtClose ? 'checked' : ''} /> Cada jogador marca “Conferido” no fechamento</label>
 
       <h2>Segurança</h2>
@@ -683,13 +722,14 @@ function openBuy(playerId) {
   openModal(
     `<header><h2>Buy #${n} · ${esc(p.name)}</h2><button class="icon-btn" data-close aria-label="Fechar">✕</button></header>
      <div class="buy-amount"><strong>${money(t.value)}</strong><span>${num(t.chips)} fichas${t.rakeChips ? `<small>+ ${t.rakeChips} de rake</small>` : ''}</span></div>
+     ${settings.requireApproval && !S.isAdminDevice() ? '<p class="notice">O buy só entra no pote depois que o admin aprovar.</p>' : ''}
      ${needSig
        ? `<p class="hint"><strong>${esc(p.name)}</strong>, assine abaixo para confirmar que recebeu as fichas.</p>
           <div class="sigwrap"><canvas class="sig"></canvas><span class="sig-ph">assine aqui</span>
           <button type="button" class="link" data-clear>Limpar</button></div>`
        : `<p class="hint">Confirme que <strong>${esc(p.name)}</strong> recebeu ${num(t.chips)} fichas.</p>`}
      <footer><button type="button" class="btn ghost" data-close>Cancelar</button>
-       <button type="button" class="btn primary" data-ok ${needSig ? 'disabled' : ''}>Confirmar buy</button></footer>`,
+       <button type="button" class="btn primary" data-ok ${needSig ? 'disabled' : ''}>${settings.requireApproval ? (S.isAdminDevice() ? 'Confirmar e aprovar' : 'Pedir aprovação') : 'Confirmar buy'}</button></footer>`,
     (root) => {
       const ok = root.querySelector('[data-ok]');
       let pad;
@@ -702,10 +742,17 @@ function openBuy(playerId) {
       }
       ok.addEventListener('click', () => {
         ok.disabled = true; // evita toque duplo
+        ownRequest = true;
         const entry = attempt(() => S.addBuy(playerId, pad ? pad.toDataURL() : null));
+        ownRequest = false;
         if (!entry) { ok.disabled = false; return; }
+        // No aparelho do admin, confirmar já é a aprovação.
+        const approved = entry.pending && S.isAdminDevice() && S.approveBuy(entry.id);
         closeModal();
-        toast(`Buy #${entry.seq} de ${p.name} registrado`, {
+        const msg = entry.pending && !approved
+          ? `Pedido de buy de ${p.name} enviado — aguardando aprovação do admin`
+          : `Buy #${entry.seq} de ${p.name} registrado${approved ? ' e aprovado' : ''}`;
+        toast(msg, {
           action: 'Desfazer',
           timeout: 7000,
           onAction: () => { S.voidBuy(entry.id, 'Desfeito logo após o registro'); toast('Buy desfeito'); },
@@ -723,11 +770,11 @@ function openPlayer(playerId) {
   const entries = session.ledger.filter((e) => e.type === 'buy' && e.playerId === playerId);
   openModal(
     `<header><h2>${esc(p.name)}</h2><button class="icon-btn" data-close aria-label="Fechar">✕</button></header>
-     <p class="muted">${plural(st.buys, 'buy válido', 'buys válidos')} · ${money(st.paid)}</p>
+     <p class="muted">${plural(st.buys, 'buy válido', 'buys válidos')} · ${money(st.paid)}${st.pending ? ` · ${st.pending} aguardando aprovação` : ''}</p>
      <button type="button" class="btn small ghost pix-btn" data-pix>Pix: ${esc(S.pixOf(p.name) || 'cadastrar chave')} ✎</button>
      <ul class="entries">
        ${entries.map((e) => `<li class="${e.voided ? 'voided' : ''}">
-          <div><strong>${e.voided ? 'Buy anulado' : `Buy #${e.seq}`}</strong><small>${hour(e.at)} · ${money(e.value)}</small>
+          <div><strong>${e.voided ? 'Buy anulado' : e.pending ? '⏳ Aguardando aprovação' : `Buy #${e.seq}`}</strong><small>${hour(e.at)} · ${money(e.value)}</small>
             ${e.voided ? `<small class="neg">Motivo: ${esc(e.voided.reason)}</small>` : ''}</div>
           ${sigImg(e)}
           ${e.voided ? '' : `<button class="btn small ghost" data-void="${e.id}">Anular</button>`}
@@ -892,7 +939,23 @@ function render() {
   app.dataset.view = name;
   restoreInputs(saved);
   if (name === 'fechar' && session) updateFechar();
+  if (session && app.querySelector('.pending-card [data-sig]')) loadSignatures(app.querySelector('.pending-card'), session.id);
 }
+
+// Avisa o aparelho do admin quando chega um pedido de buy de outro celular.
+let ownRequest = false;
+let knownPending = new Set(S.pendingBuys().map((e) => e.id));
+S.subscribe(() => {
+  const now = S.pendingBuys();
+  const fresh = now.filter((e) => !knownPending.has(e.id));
+  knownPending = new Set(now.map((e) => e.id));
+  if (!fresh.length || ownRequest || !S.isAdminDevice()) return;
+  const name = S.getPlayer(fresh[0].playerId)?.name ?? 'Alguém';
+  toast(fresh.length > 1 ? `${fresh.length} novos pedidos de buy` : `${name} pediu um buy — aprovar?`, {
+    action: 'Ver', timeout: 10000, onAction: () => { location.hash = '#/'; window.scrollTo(0, 0); },
+  });
+  navigator.vibrate?.([150, 80, 150]);
+});
 
 window.addEventListener('hashchange', () => { adminGateOpen = false; renderedKey = ''; app.innerHTML = ''; render(); window.scrollTo(0, 0); });
 S.subscribe(render);
@@ -936,6 +999,27 @@ app.addEventListener('click', async (e) => {
       return;
     }
     case 'audit': return openAudit(id);
+    case 'approve-buy':
+      if (!(await requireAdmin('aprovar buys'))) return;
+      if (S.approveBuy(id)) toast('Buy aprovado ✓');
+      return;
+    case 'reject-buy': {
+      if (!(await requireAdmin('recusar buys'))) return;
+      const reason = await ask({ title: 'Recusar buy', body: 'O pedido fica no registro como recusado. Nada entra no pote.', input: 'placeholder="Motivo (opcional)" maxlength="80"', confirmText: 'Recusar', danger: true });
+      if (reason === null) return;
+      if (S.rejectBuy(id, reason)) toast('Buy recusado');
+      return;
+    }
+    case 'admin-device-on':
+      if (!(await requireAdmin('definir o aparelho do admin'))) return;
+      S.setAdminDevice(true);
+      toast('Este aparelho agora aprova os buys');
+      return;
+    case 'admin-device-off':
+      S.setAdminDevice(false);
+      adminUnlockedUntil = 0;
+      toast('Este aparelho não é mais o do admin');
+      return;
     case 'share-ranking': {
       const text = rankingText(id);
       if (navigator.share) {
@@ -1062,6 +1146,7 @@ app.addEventListener('submit', (e) => {
         regulars: String(data.get('regulars') || '').split(/[\n,]/).map((n) => n.trim().replace(/\s+/g, ' ')).filter(Boolean),
         requireSignature: data.get('requireSignature') === 'on',
         requireConfirmAtClose: data.get('requireConfirmAtClose') === 'on',
+        requireApproval: data.get('requireApproval') === 'on',
         adminPin: String(data.get('adminPin') || '').trim(),
       };
       if (!session) {

@@ -8,9 +8,10 @@ Controle das noites de poker com os amigos: buys por jogador, pote sempre visív
 
 1. **Mesa → Nova jogatina:** adicione quem vai jogar (os frequentes aparecem com um toque) e toque em *Começar jogatina*.
 2. **+ Buy:** o jogador **assina com o dedo** na tela e confirma. O pote, o número de buys e as fichas em jogo atualizam na hora, no topo da tela.
-3. Errou? Um toque em **Desfazer** logo após o registro, ou toque no nome do jogador → *Anular* (pede motivo e, se configurado, PIN).
-4. **Finalizar jogatina:** conte as fichas de cada um, digite, e o jogador marca *Conferido*. Só dá para encerrar quando **a soma bate exatamente** com as fichas em jogo.
-5. **Resultado:** quanto cada um recebe e o saldo. O botão **Enviar para o caixa (WhatsApp)** abre a conversa com o caixa já com a mensagem pronta:
+3. **Aprovação do admin:** o buy fica **⏳ aguardando aprovação** e só entra no pote depois que o admin aprova (vendo a assinatura). O pedido aparece em destaque na mesa e no Admin, em todos os celulares. No **aparelho do admin** (Admin → *Usar este aparelho como admin*) chega um aviso com vibração a cada pedido novo, e aprovar/recusar não pede PIN; em outro aparelho, aprovar pede o PIN. Buy lançado no próprio aparelho do admin já sai aprovado ("Confirmar e aprovar"). Recusados ficam no registro com o motivo. Não dá para fechar a jogatina com pedido pendente. Dá para desligar em Admin → Conferência.
+4. Errou? Um toque em **Desfazer** logo após o registro, ou toque no nome do jogador → *Anular* (pede motivo e, se configurado, PIN).
+5. **Finalizar jogatina:** conte as fichas de cada um, digite, e o jogador marca *Conferido*. Só dá para encerrar quando **a soma bate exatamente** com as fichas em jogo.
+6. **Resultado:** quanto cada um recebe e o saldo. O botão **Enviar para o caixa (WhatsApp)** abre a conversa com o caixa já com a mensagem pronta:
    ```
    A pagar:
    Ian - R$ 60,00 - Pix: ian@email.com
@@ -19,9 +20,9 @@ Controle das noites de poker com os amigos: buys por jogador, pote sempre visív
    Davi - R$ 5,00
    Rake (fica no caixa): R$ 10,00
    ```
-6. **Histórico → Partidas:** as partidas encerradas, agrupadas por mês, com o campeão de cada mês (ou quem está liderando o mês atual).
-7. **Histórico → Ranking:** ranking **geral** e de **cada mês**, com ganhos (soma das noites no positivo), perdas (soma das noites no negativo), saldo, jogos e vitórias. Botão para compartilhar no grupo.
-8. **Apagar partida:** dá para apagar uma partida específica (🗑 na lista ou *Apagar partida* no resultado; pede o PIN, se houver).
+7. **Histórico → Partidas:** as partidas encerradas, agrupadas por mês, com o campeão de cada mês (ou quem está liderando o mês atual).
+8. **Histórico → Ranking:** ranking **geral** e de **cada mês**, com ganhos (soma das noites no positivo), perdas (soma das noites no negativo), saldo, jogos e vitórias. Botão para compartilhar no grupo.
+9. **Apagar partida:** dá para apagar uma partida específica (🗑 na lista ou *Apagar partida* no resultado; pede o PIN, se houver).
 
 **Admin (⚙︎):** nome do grupo, jogadores frequentes, caixa (nome + WhatsApp), chaves Pix dos jogadores, valor do buy, fichas por buy, rake (fichas por buy, % do pote ou fixo), forma de pagamento, PIN do admin, sincronização online e backup.
 
@@ -59,6 +60,7 @@ O Firebase do grupo (`poker-night-aeed6`) já está configurado em [`js/firebase
 | Problema de antes | Como o app resolve |
 |---|---|
 | Ficha colorida de controle se perdia | O buy existe **só no app**, com data/hora e assinatura do jogador. Nada físico para perder. |
+| Buy lançado sem o admin ver | Todo buy precisa ser **aprovado pelo admin** antes de entrar no pote. |
 | "Eu não fiz 3 buys, foram 2" | Cada buy tem a **assinatura** de quem pegou as fichas. Em *Ver assinaturas* dá para conferir um por um. |
 | Buy lançado errado ou em dobro | Buys **nunca são apagados**: são *anulados* com motivo e continuam no registro, riscados. Proteção contra toque duplo. |
 | Conta que não fecha no final | O fechamento exige que **fichas contadas = fichas vendidas**. Se faltar ou sobrar uma ficha, o app mostra a diferença e não deixa encerrar. |
