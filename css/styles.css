@@ -365,3 +365,22 @@ details.card[open] > summary h2 { margin-bottom: 12px; }
 .approvals li > div:first-child { flex: 1 1 auto; }
 #toast { width: max-content; }
 .approvals .approve-actions { flex-direction: row; }
+
+/* ---------- Vários buys por pedido ---------- */
+.qty { display: flex; align-items: center; justify-content: center; gap: 24px; padding: 6px 0; }
+.qty output { font-size: 3rem; font-weight: 800; min-width: 64px; text-align: center; font-variant-numeric: tabular-nums; }
+.qty-btn { width: 64px; height: 64px; border-radius: 50%; border: 1px solid var(--line); background: var(--felt-2); color: var(--text); font-size: 2rem; font-weight: 700; cursor: pointer; }
+.qty-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.qty-btn:active:not(:disabled) { transform: scale(0.94); }
+.sig-count { line-height: 1.45; }
+.sig-steps { display: flex; gap: 6px; }
+.sig-steps i { flex: 1; height: 6px; border-radius: 99px; background: var(--felt-2); }
+.sig-steps i.done { background: var(--green); }
+.sig-steps i.now { background: var(--gold); }
+.sig-grid { display: flex; flex-wrap: wrap; gap: 6px; flex: 1 1 100%; }
+.sig-grid img { height: 48px; width: auto; border-radius: 6px; background: #fff; }
+.approvals .sig-grid { flex-direction: row; }
+.modal footer > * { min-width: 0; white-space: normal; text-align: center; line-height: 1.2; }
+.approvals li > div:first-child { flex: 1 1 100%; }
+.approvals li > .sig-grid { flex: 1 1 100%; flex-direction: row; flex-wrap: wrap; }
+.approvals .sig-grid img, .approvals .sig-grid em { height: 56px; width: auto; max-width: calc(33% - 4px); object-fit: contain; }

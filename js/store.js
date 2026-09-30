@@ -299,46 +299,103 @@ export function removePlayer(playerId) {
 
 export const getPlayer = (playerId) => view.session?.players.find((p) => p.id === playerId);
 
-export function addBuy(playerId, signature) {
+export const MAX_BUYS_PER_REQUEST = 10;
+
+/**
+ * Registra `count` buys de uma vez (um pedido). Cada buy tem a própria assinatura
+ * (`signatures[i]`) e todos compartilham o mesmo `requestId`, para o admin aprovar juntos.
+ */
+export function addBuys(playerId, count = 1, signatures = []) {
   const session = requireSession();
   if (!getPlayer(playerId)) throw new Error('Jogador não encontrado');
-  if (view.settings.requireSignature && !signature) throw new Error('Assinatura obrigatória');
+  const n = Math.max(1, Math.min(MAX_BUYS_PER_REQUEST, Math.round(count)));
+  if (view.settings.requireSignature && (signatures.length < n || signatures.some((x) => !x))) {
+    throw new Error('Assinatura obrigatória em cada buy');
+  }
   const t = buyTerms();
   const pending = Boolean(view.settings.requireApproval);
-  const e = entry('buy', { playerId, value: t.value, chips: t.chips, rake: t.rake, rakeChips: t.rakeChips, signed: Boolean(signature), ...(pending ? { pending: true } : {}) });
-  const updates = ledgerPath(e);
-  if (signature) updates[`signatures/${session.id}/${e.id}`] = signature;
-  // Qualquer buy novo invalida a conferência daquele jogador.
-  updates[`session/draft/confirmed/${playerId}`] = null;
+  const requestId = uid();
+  const now = Date.now();
+  const first = activeBuys(session.ledger, playerId).length + 1;
+  const updates = { [`session/draft/confirmed/${playerId}`]: null }; // buy novo invalida a conferência
+  const entries = [];
+  for (let i = 0; i < n; i += 1) {
+    const sig = signatures[i] || null;
+    const e = {
+      id: uid(), type: 'buy', at: now + i, playerId, requestId,
+      value: t.value, chips: t.chips, rake: t.rake, rakeChips: t.rakeChips, signed: Boolean(sig),
+      ...(pending ? { pending: true } : {}),
+    };
+    updates[`session/ledger/${e.id}`] = e;
+    if (sig) updates[`signatures/${session.id}/${e.id}`] = sig;
+    entries.push({ ...e, seq: first + i });
+  }
   apply(updates);
-  return { ...e, seq: activeBuys(session.ledger, playerId).length + 1 };
+  return entries;
 }
+
+export const addBuy = (playerId, signature) => addBuys(playerId, 1, [signature])[0];
 
 export const pendingBuys = () => pendingOf(view.session?.ledger || []);
 
-/** Admin certifica o buy: só a partir daqui ele entra no pote. */
-export function approveBuy(entryId) {
-  const e = view.session?.ledger.find((x) => x.id === entryId && x.type === 'buy');
-  if (!e?.pending || e.voided) return false;
-  apply({
-    [`session/ledger/${entryId}/pending`]: null,
-    [`session/ledger/${entryId}/approvedAt`]: Date.now(),
-    [`session/draft/confirmed/${e.playerId}`]: null,
-    ...ledgerPath(entry('approve', { refId: entryId, playerId: e.playerId })),
-  });
-  return true;
+/** Pedidos pendentes agrupados (vários buys do mesmo jogador feitos juntos). */
+export function pendingRequests() {
+  const map = new Map();
+  for (const e of pendingBuys()) {
+    const key = e.requestId || e.id;
+    if (!map.has(key)) map.set(key, { key, playerId: e.playerId, at: e.at, entries: [] });
+    map.get(key).entries.push(e);
+  }
+  return [...map.values()].sort((a, b) => a.at - b.at);
 }
 
-export function rejectBuy(entryId, reason) {
-  const e = view.session?.ledger.find((x) => x.id === entryId && x.type === 'buy');
-  if (!e?.pending || e.voided) return false;
+const pendingOfRequest = (key) => pendingBuys().filter((e) => (e.requestId || e.id) === key);
+
+/** Admin certifica o pedido inteiro: só a partir daqui os buys entram no pote. */
+export function approveRequest(key) {
+  const list = pendingOfRequest(key);
+  if (!list.length) return 0;
+  const now = Date.now();
+  const updates = {};
+  for (const e of list) {
+    updates[`session/ledger/${e.id}/pending`] = null;
+    updates[`session/ledger/${e.id}/approvedAt`] = now;
+    updates[`session/draft/confirmed/${e.playerId}`] = null;
+  }
+  Object.assign(updates, ledgerPath(entry('approve', { requestId: key, refIds: list.map((e) => e.id), playerId: list[0].playerId })));
+  apply(updates);
+  return list.length;
+}
+
+export function rejectRequest(key, reason) {
+  const list = pendingOfRequest(key);
+  if (!list.length) return 0;
   const why = `Recusado pelo admin${reason ? `: ${String(reason).trim()}` : ''}`;
-  apply({
-    [`session/ledger/${entryId}/pending`]: null,
-    [`session/ledger/${entryId}/voided`]: { at: Date.now(), reason: why },
-    ...ledgerPath(entry('void', { refId: entryId, playerId: e.playerId, reason: why })),
-  });
-  return true;
+  const now = Date.now();
+  const updates = {};
+  for (const e of list) {
+    updates[`session/ledger/${e.id}/pending`] = null;
+    updates[`session/ledger/${e.id}/voided`] = { at: now, reason: why };
+  }
+  Object.assign(updates, ledgerPath(entry('void', { requestId: key, refIds: list.map((e) => e.id), playerId: list[0].playerId, reason: why })));
+  apply(updates);
+  return list.length;
+}
+
+/** Desfaz um pedido inteiro logo após o registro. */
+export function voidBuys(ids, reason) {
+  const session = requireSession();
+  const why = String(reason || '').trim() || 'Sem motivo';
+  const list = session.ledger.filter((e) => ids.includes(e.id) && e.type === 'buy' && !e.voided);
+  if (!list.length) return;
+  const now = Date.now();
+  const updates = {};
+  for (const e of list) {
+    updates[`session/ledger/${e.id}/voided`] = { at: now, reason: why };
+    updates[`session/draft/confirmed/${e.playerId}`] = null;
+  }
+  Object.assign(updates, ledgerPath(entry('void', { refIds: list.map((e) => e.id), playerId: list[0].playerId, reason: why })));
+  apply(updates);
 }
 
 // ---------- Aparelho do admin ----------

@@ -184,23 +184,29 @@ function renderSync() {
 /** Buys pedidos que aguardam o admin (aparece na mesa e no Admin). */
 function pendingSection() {
   const { session } = S.getState();
-  const pending = S.pendingBuys();
-  if (!session || !pending.length) return '';
+  const requests = S.pendingRequests();
+  if (!session || !requests.length) return '';
   const admin = S.isAdminDevice();
   const nameOf = (id) => session.players.find((p) => p.id === id)?.name ?? '—';
+  const total = requests.reduce((a, r) => a + r.entries.length, 0);
   return `
     <section class="card pending-card" aria-live="polite">
-      <h2>⏳ Aguardando aprovação (${pending.length})</h2>
-      <p class="muted small">${admin ? 'Confira a assinatura e se as fichas foram entregues.' : 'O admin precisa aprovar. O buy só entra no pote depois disso.'}</p>
+      <h2>⏳ Aguardando aprovação (${plural(requests.length, 'pedido', 'pedidos')}${total > requests.length ? ` · ${total} buys` : ''})</h2>
+      <p class="muted small">${admin ? 'Confira as assinaturas e se as fichas foram entregues.' : 'O admin precisa aprovar. Os buys só entram no pote depois disso.'}</p>
       <ul class="entries approvals">
-        ${pending.map((e) => `<li>
-          <div><strong>${esc(nameOf(e.playerId))}</strong><small>Pedido às ${hour(e.at)} · ${money(e.value)} · ${num(e.chips)} fichas</small></div>
-          ${sigImg(e)}
+        ${requests.map((r) => {
+          const n = r.entries.length;
+          const value = r.entries.reduce((a, e) => a + e.value, 0);
+          const chips = r.entries.reduce((a, e) => a + e.chips, 0);
+          return `<li>
+          <div><strong>${esc(nameOf(r.playerId))} · ${plural(n, 'buy', 'buys')}</strong><small>Pedido às ${hour(r.at)} · ${money(value)} · ${num(chips)} fichas</small></div>
+          <div class="sig-grid">${r.entries.map((e) => sigImg(e)).join('')}</div>
           <div class="approve-actions">
-            <button class="btn small danger" data-action="reject-buy" data-id="${e.id}">Recusar</button>
-            <button class="btn small primary" data-action="approve-buy" data-id="${e.id}">${admin ? '' : '🔒 '}Aprovar</button>
+            <button class="btn small danger" data-action="reject-request" data-id="${r.key}">Recusar${n > 1 ? ' tudo' : ''}</button>
+            <button class="btn small primary" data-action="approve-request" data-id="${r.key}">${admin ? '' : '🔒 '}Aprovar${n > 1 ? ` ${n} buys` : ''}</button>
           </div>
-        </li>`).join('')}
+        </li>`;
+        }).join('')}
       </ul>
     </section>`;
 }
@@ -712,54 +718,113 @@ function viewAdmin() {
 }
 
 // ---------- Modais de jogador / buy ----------
+/** Buy em etapas: 1) quantidade  2) uma assinatura por buy  3) pedido único ao admin. */
 function openBuy(playerId) {
   const { settings } = S.getState();
   const p = S.getPlayer(playerId);
   if (!p) return;
   const t = S.buyTerms(settings);
-  const n = S.playerStats(playerId).buys + 1;
   const needSig = settings.requireSignature;
-  openModal(
-    `<header><h2>Buy #${n} · ${esc(p.name)}</h2><button class="icon-btn" data-close aria-label="Fechar">✕</button></header>
-     <div class="buy-amount"><strong>${money(t.value)}</strong><span>${num(t.chips)} fichas${t.rakeChips ? `<small>+ ${t.rakeChips} de rake</small>` : ''}</span></div>
-     ${settings.requireApproval && !S.isAdminDevice() ? '<p class="notice">O buy só entra no pote depois que o admin aprovar.</p>' : ''}
-     ${needSig
-       ? `<p class="hint"><strong>${esc(p.name)}</strong>, assine abaixo para confirmar que recebeu as fichas.</p>
-          <div class="sigwrap"><canvas class="sig"></canvas><span class="sig-ph">assine aqui</span>
-          <button type="button" class="link" data-clear>Limpar</button></div>`
-       : `<p class="hint">Confirme que <strong>${esc(p.name)}</strong> recebeu ${num(t.chips)} fichas.</p>`}
-     <footer><button type="button" class="btn ghost" data-close>Cancelar</button>
-       <button type="button" class="btn primary" data-ok ${needSig ? 'disabled' : ''}>${settings.requireApproval ? (S.isAdminDevice() ? 'Confirmar e aprovar' : 'Pedir aprovação') : 'Confirmar buy'}</button></footer>`,
-    (root) => {
-      const ok = root.querySelector('[data-ok]');
-      let pad;
-      if (needSig) {
+  const approval = settings.requireApproval && !S.isAdminDevice();
+  const finalLabel = (n) => {
+    const q = n > 1 ? ` (${n} buys)` : '';
+    return settings.requireApproval ? (S.isAdminDevice() ? `Confirmar e aprovar${q}` : `Pedir aprovação${q}`) : `Confirmar${q}`;
+  };
+  let qty = 1;
+  const signatures = [];
+
+  const stepQty = () => {
+    const first = S.playerStats(playerId).buys + 1;
+    openModal(
+      `<header><h2>Buy · ${esc(p.name)}</h2><button class="icon-btn" data-close aria-label="Fechar">✕</button></header>
+       <p class="hint">Quantos buys ${esc(p.name)} vai pegar agora?</p>
+       <div class="qty">
+         <button type="button" class="qty-btn" data-dec aria-label="Menos um">−</button>
+         <output data-qty>${qty}</output>
+         <button type="button" class="qty-btn" data-inc aria-label="Mais um">+</button>
+       </div>
+       <div class="buy-amount"><strong data-total></strong><span data-chips></span></div>
+       <p class="notice sig-count" data-sigs></p>
+       <footer><button type="button" class="btn ghost" data-close>Cancelar</button>
+         <button type="button" class="btn primary" data-next></button></footer>`,
+      (root) => {
+        const update = () => {
+          root.querySelector('[data-qty]').textContent = qty;
+          root.querySelector('[data-total]').textContent = money(t.value * qty);
+          root.querySelector('[data-chips]').innerHTML = `${num(t.chips * qty)} fichas${t.rakeChips ? `<small>+ ${num(t.rakeChips * qty)} de rake</small>` : ''}`;
+          const nums = qty > 1 ? `buys #${first} a #${first + qty - 1}` : `buy #${first}`;
+          root.querySelector('[data-sigs]').innerHTML = needSig
+            ? `✍️ ${esc(p.name)} vai precisar assinar <strong>${plural(qty, 'vez', 'vezes')}</strong> — uma para cada buy (${nums}).${approval ? '<br>Depois vai <strong>um pedido só</strong> para o admin aprovar.' : ''}`
+            : `${qty > 1 ? `${qty} buys` : '1 buy'} (${nums}).${approval ? ' Vai um pedido só para o admin aprovar.' : ''}`;
+          root.querySelector('[data-dec]').disabled = qty <= 1;
+          root.querySelector('[data-inc]').disabled = qty >= S.MAX_BUYS_PER_REQUEST;
+          root.querySelector('[data-next]').textContent = needSig ? `Assinar (1 de ${qty})` : finalLabel(qty);
+        };
+        root.querySelector('[data-dec]').addEventListener('click', () => { qty = Math.max(1, qty - 1); update(); });
+        root.querySelector('[data-inc]').addEventListener('click', () => { qty = Math.min(S.MAX_BUYS_PER_REQUEST, qty + 1); update(); });
+        root.querySelector('[data-next]').addEventListener('click', (e) => {
+          if (needSig) return stepSign(0);
+          e.currentTarget.disabled = true;
+          submit();
+        });
+        update();
+      },
+    );
+  };
+
+  const stepSign = (i) => {
+    const first = S.playerStats(playerId).buys + 1;
+    const last = i === qty - 1;
+    openModal(
+      `<header><h2>Assinatura ${i + 1} de ${qty}</h2><button class="icon-btn" data-close aria-label="Fechar">✕</button></header>
+       ${qty > 1 ? `<div class="sig-steps" aria-hidden="true">${Array.from({ length: qty }, (_, k) => `<i class="${k < i ? 'done' : k === i ? 'now' : ''}"></i>`).join('')}</div>` : ''}
+       <div class="buy-amount"><strong>Buy #${first + i}</strong><span>${money(t.value)} · ${num(t.chips)} fichas</span></div>
+       <p class="hint"><strong>${esc(p.name)}</strong>, assine para confirmar este buy.</p>
+       <div class="sigwrap"><canvas class="sig"></canvas><span class="sig-ph">assine aqui</span>
+         <button type="button" class="link" data-clear>Limpar</button></div>
+       <footer>
+         <button type="button" class="btn ghost" data-back>${i === 0 ? 'Voltar' : '← Anterior'}</button>
+         <button type="button" class="btn primary" data-ok disabled>${last ? finalLabel(1) : `Próxima →`}</button>
+       </footer>`,
+      (root) => {
+        const ok = root.querySelector('[data-ok]');
         const ph = root.querySelector('.sig-ph');
-        pad = new SignaturePad(root.querySelector('canvas'), {
+        const pad = new SignaturePad(root.querySelector('canvas'), {
           onChange: (empty) => { ok.disabled = empty; ph.hidden = true; },
         });
         root.querySelector('[data-clear]').addEventListener('click', () => { pad.clear(); ph.hidden = false; });
-      }
-      ok.addEventListener('click', () => {
-        ok.disabled = true; // evita toque duplo
-        ownRequest = true;
-        const entry = attempt(() => S.addBuy(playerId, pad ? pad.toDataURL() : null));
-        ownRequest = false;
-        if (!entry) { ok.disabled = false; return; }
-        // No aparelho do admin, confirmar já é a aprovação.
-        const approved = entry.pending && S.isAdminDevice() && S.approveBuy(entry.id);
-        closeModal();
-        const msg = entry.pending && !approved
-          ? `Pedido de buy de ${p.name} enviado — aguardando aprovação do admin`
-          : `Buy #${entry.seq} de ${p.name} registrado${approved ? ' e aprovado' : ''}`;
-        toast(msg, {
-          action: 'Desfazer',
-          timeout: 7000,
-          onAction: () => { S.voidBuy(entry.id, 'Desfeito logo após o registro'); toast('Buy desfeito'); },
+        root.querySelector('[data-back]').addEventListener('click', () => (i === 0 ? stepQty() : stepSign(i - 1)));
+        ok.addEventListener('click', () => {
+          ok.disabled = true; // evita toque duplo
+          signatures[i] = pad.toDataURL();
+          if (last) submit();
+          else stepSign(i + 1);
         });
-      });
-    },
-  );
+      },
+    );
+  };
+
+  const submit = () => {
+    ownRequest = true;
+    const entries = attempt(() => S.addBuys(playerId, qty, needSig ? signatures.slice(0, qty) : []));
+    ownRequest = false;
+    if (!entries) return stepQty();
+    // No aparelho do admin, confirmar já é a aprovação.
+    const pending = entries[0].pending;
+    const approved = pending && S.isAdminDevice() && S.approveRequest(entries[0].requestId);
+    closeModal();
+    const what = qty > 1 ? `${qty} buys` : `Buy #${entries[0].seq}`;
+    const msg = pending && !approved
+      ? `Pedido de ${qty > 1 ? `${qty} buys` : 'buy'} de ${p.name} enviado — aguardando aprovação do admin`
+      : `${what} de ${p.name} registrado${qty > 1 ? 's' : ''}${approved ? ` e aprovado${qty > 1 ? 's' : ''}` : ''}`;
+    toast(msg, {
+      action: 'Desfazer',
+      timeout: 8000,
+      onAction: () => { S.voidBuys(entries.map((e) => e.id), 'Desfeito logo após o registro'); toast('Desfeito'); },
+    });
+  };
+
+  stepQty();
 }
 
 function openPlayer(playerId) {
@@ -950,8 +1015,10 @@ S.subscribe(() => {
   const fresh = now.filter((e) => !knownPending.has(e.id));
   knownPending = new Set(now.map((e) => e.id));
   if (!fresh.length || ownRequest || !S.isAdminDevice()) return;
+  const requests = new Set(fresh.map((e) => e.requestId || e.id));
   const name = S.getPlayer(fresh[0].playerId)?.name ?? 'Alguém';
-  toast(fresh.length > 1 ? `${fresh.length} novos pedidos de buy` : `${name} pediu um buy — aprovar?`, {
+  const text = requests.size > 1 ? `${requests.size} novos pedidos de buy` : fresh.length > 1 ? `${name} pediu ${fresh.length} buys — aprovar?` : `${name} pediu um buy — aprovar?`;
+  toast(text, {
     action: 'Ver', timeout: 10000, onAction: () => { location.hash = '#/'; window.scrollTo(0, 0); },
   });
   navigator.vibrate?.([150, 80, 150]);
@@ -999,15 +1066,18 @@ app.addEventListener('click', async (e) => {
       return;
     }
     case 'audit': return openAudit(id);
-    case 'approve-buy':
+    case 'approve-request': {
       if (!(await requireAdmin('aprovar buys'))) return;
-      if (S.approveBuy(id)) toast('Buy aprovado ✓');
+      const n = S.approveRequest(id);
+      if (n) toast(n > 1 ? `${n} buys aprovados ✓` : 'Buy aprovado ✓');
       return;
-    case 'reject-buy': {
+    }
+    case 'reject-request': {
       if (!(await requireAdmin('recusar buys'))) return;
-      const reason = await ask({ title: 'Recusar buy', body: 'O pedido fica no registro como recusado. Nada entra no pote.', input: 'placeholder="Motivo (opcional)" maxlength="80"', confirmText: 'Recusar', danger: true });
+      const n = S.pendingRequests().find((r) => r.key === id)?.entries.length || 0;
+      const reason = await ask({ title: n > 1 ? `Recusar ${n} buys` : 'Recusar buy', body: 'O pedido fica no registro como recusado. Nada entra no pote.', input: 'placeholder="Motivo (opcional)" maxlength="80"', confirmText: 'Recusar', danger: true });
       if (reason === null) return;
-      if (S.rejectBuy(id, reason)) toast('Buy recusado');
+      if (S.rejectRequest(id, reason)) toast(n > 1 ? `${n} buys recusados` : 'Buy recusado');
       return;
     }
     case 'admin-device-on':
