@@ -389,3 +389,18 @@ details.card[open] > summary h2 { margin-bottom: 12px; }
   .topbar nav a { padding: 8px 8px; font-size: 0.85rem; }
   .brand { font-size: 0.98rem; }
 }
+
+/* ---------- Saída individual ---------- */
+.out-card h2 { margin-bottom: 4px; }
+.link-row { display: flex; justify-content: space-between; gap: 12px; width: 100%; background: none; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; padding: 0; }
+.link-row > span { display: flex; flex-direction: column; min-width: 0; }
+.link-row .right { text-align: right; align-items: flex-end; flex-shrink: 0; }
+.out-card li { padding: 10px 0; }
+.out-box { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border-radius: 12px; background: var(--bg); }
+.big-count .field { font-size: 1.8rem; min-height: 64px; text-align: center; }
+.buy-amount > span small { display: block; font-size: 0.85rem; font-weight: 600; }
+.confirm.left { justify-content: flex-start; }
+.close-row.is-out { opacity: 0.85; border-style: dashed; }
+.close-row.is-out .field { background: var(--felt-2); }
+.out-net { margin: 0; font-size: 1.05rem; }
+.results .sub { display: block; color: var(--muted); font-size: 0.75rem; font-weight: 400; }

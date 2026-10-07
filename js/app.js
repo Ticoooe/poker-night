@@ -242,7 +242,7 @@ function viewMesa() {
   if (!session) return viewStart();
   const inTable = new Set(session.players.map((p) => p.name.toLowerCase()));
   const frequent = S.frequentPlayers().filter((n) => !inTable.has(n.toLowerCase()));
-  const recent = [...session.ledger].filter((e) => e.type === 'buy' || e.type === 'void').reverse().slice(0, 6);
+  const recent = [...session.ledger].filter((e) => ['buy', 'void', 'cashout'].includes(e.type)).reverse().slice(0, 6);
   const nameOf = (id) => session.players.find((p) => p.id === id)?.name ?? '—';
 
   return `
@@ -250,7 +250,7 @@ function viewMesa() {
     <p class="session-meta">Começou ${hour(session.startedAt)} · ${termsLine(settings)}</p>
     ${pendingSection()}
     <section class="players">
-      ${session.players.map((p) => {
+      ${session.players.filter((p) => !p.cashout).map((p) => {
         const st = S.playerStats(p.id);
         return `
         <article class="player">
@@ -261,8 +261,9 @@ function viewMesa() {
           <div class="buycount" title="Buys">${chipsPips(st.buys)}<strong>${st.buys}</strong><small>${st.buys === 1 ? 'buy' : 'buys'}</small></div>
           <button class="btn-buy" data-action="buy" data-id="${p.id}">+ Buy</button>
         </article>`;
-      }).join('') || '<p class="muted">Nenhum jogador ainda.</p>'}
+      }).join('') || `<p class="muted">${session.players.length ? 'Todos já encerraram o jogo.' : 'Nenhum jogador ainda.'}</p>`}
     </section>
+    ${outSection(session)}
     <section class="card">
       <form class="inline-form" data-form="player-add">
         <input class="field" name="name" placeholder="Adicionar jogador" autocomplete="off" enterkeyhint="done" />
@@ -276,9 +277,27 @@ function viewMesa() {
       <h2>Últimos registros</h2>
       <ul class="log">${recent.map((e) => e.type === 'buy'
         ? `<li class="${e.voided ? 'voided' : ''}"><time>${hour(e.at)}</time> <span>${e.voided ? 'Buy' : e.pending ? '⏳ Pedido de buy' : `Buy #${e.seq}`} · <strong>${esc(nameOf(e.playerId))}</strong></span> <span>${money(e.value)}</span></li>`
+        : e.type === 'cashout' ? `<li><time>${hour(e.at)}</time> <span>🏁 <strong>${esc(nameOf(e.playerId))}</strong> encerrou o jogo com ${num(e.chips)} fichas</span></li>`
         : `<li class="void"><time>${hour(e.at)}</time> <span>Anulado · <strong>${esc(nameOf(e.playerId))}</strong> — ${esc(e.reason)}</span></li>`).join('')}
       </ul>
     </section>` : ''}`;
+}
+
+/** Jogadores que já encerraram o jogo (contagem travada). */
+function outSection(session) {
+  const out = session.players.filter((p) => p.cashout);
+  if (!out.length) return '';
+  return `
+    <section class="card out-card">
+      <h2>🏁 Já saíram (${out.length})</h2>
+      <ul class="transfers">${out.map((p) => {
+        const r = S.previewCashOut(p.id, p.cashout.chips);
+        return `<li><button class="link-row" data-action="player" data-id="${p.id}">
+          <span><strong>${esc(p.name)}</strong><small class="muted">Saiu às ${hour(p.cashout.at)} · ${num(p.cashout.chips)} fichas · ${plural(r.buys, 'buy', 'buys')}</small></span>
+          <span class="right"><strong class="${netClass(r.net)}">${signed(r.net)}</strong><small class="muted">recebe ${money(r.payout)}${r.exact ? '' : ' (estim.)'}</small></span>
+        </button></li>`;
+      }).join('')}</ul>
+    </section>`;
 }
 
 function viewFechar() {
@@ -300,15 +319,16 @@ function viewFechar() {
       ${session.players.map((p) => {
         const st = S.playerStats(p.id);
         const c = draft.counts[p.id];
+        const out = p.cashout;
         return `
-        <article class="close-row" data-row="${p.id}">
+        <article class="close-row ${out ? 'is-out' : ''}" data-row="${p.id}">
           <div class="close-name"><span class="avatar sm">${esc(initial(p.name))}</span>
-            <span><strong>${esc(p.name)}</strong><small>${plural(st.buys, 'buy', 'buys')} · pagou ${money(st.paid)}</small></span></div>
-          <label class="count"><span>Fichas</span>
-            <input class="field" data-count="${p.id}" inputmode="numeric" pattern="[0-9]*" placeholder="—" value="${c ?? ''}" />
+            <span><strong>${esc(p.name)}</strong><small>${out ? `🏁 Saiu às ${hour(out.at)} · ` : ''}${plural(st.buys, 'buy', 'buys')} · pagou ${money(st.paid)}</small></span></div>
+          <label class="count"><span>Fichas${out ? ' 🔒' : ''}</span>
+            <input class="field" data-count="${p.id}" inputmode="numeric" pattern="[0-9]*" placeholder="—" value="${c ?? ''}" ${out ? 'readonly' : ''} />
           </label>
           <div class="close-result"><small>Recebe</small><strong data-payout>—</strong><small data-net></small></div>
-          ${settings.requireConfirmAtClose ? `<label class="confirm"><input type="checkbox" data-confirm="${p.id}" ${draft.confirmed[p.id] ? 'checked' : ''}/> Conferido</label>` : ''}
+          ${settings.requireConfirmAtClose ? `<label class="confirm"><input type="checkbox" data-confirm="${p.id}" ${draft.confirmed[p.id] ? 'checked' : ''} ${out ? 'disabled' : ''}/> Conferido</label>` : ''}
         </article>`;
       }).join('')}
     </section>
@@ -422,7 +442,7 @@ function viewResultado(id) {
       <h2>Jogadores</h2>
       <div class="table-wrap"><table class="results">
         <thead><tr><th>Jogador</th><th>Buys</th><th class="hide-xs">Pagou</th><th class="hide-xs">Fichas</th><th>Recebe</th><th>Saldo</th></tr></thead>
-        <tbody>${rows.map((x) => `<tr><td><strong>${esc(x.name)}</strong></td><td>${x.buys}</td><td class="hide-xs">${money(x.paid)}</td><td class="hide-xs">${num(x.chips)}</td><td>${money(x.payout)}</td><td class="${netClass(x.net)}"><strong>${signed(x.net)}</strong></td></tr>`).join('')}</tbody>
+        <tbody>${rows.map((x) => `<tr><td><strong>${esc(x.name)}</strong>${x.leftAt ? `<small class="sub">saiu ${hour(x.leftAt)}</small>` : ''}</td><td>${x.buys}</td><td class="hide-xs">${money(x.paid)}</td><td class="hide-xs">${num(x.chips)}</td><td>${money(x.payout)}</td><td class="${netClass(x.net)}"><strong>${signed(x.net)}</strong></td></tr>`).join('')}</tbody>
       </table></div>
     </section>
     <section class="card caixa">
@@ -833,21 +853,29 @@ function openPlayer(playerId) {
   if (!p) return;
   const st = S.playerStats(playerId);
   const entries = session.ledger.filter((e) => e.type === 'buy' && e.playerId === playerId);
+  const out = p.cashout;
+  const outRes = out ? S.previewCashOut(playerId, out.chips) : null;
   openModal(
     `<header><h2>${esc(p.name)}</h2><button class="icon-btn" data-close aria-label="Fechar">✕</button></header>
      <p class="muted">${plural(st.buys, 'buy válido', 'buys válidos')} · ${money(st.paid)}${st.pending ? ` · ${st.pending} aguardando aprovação` : ''}</p>
+     ${out
+       ? `<div class="out-box"><strong>🏁 Encerrou às ${hour(out.at)} com ${num(out.chips)} fichas</strong>
+            <span>Recebe ${money(outRes.payout)} · saldo <strong class="${netClass(outRes.net)}">${signed(outRes.net)}</strong>${outRes.exact ? '' : ' (estimado até o fechamento)'}</span></div>`
+       : st.buys ? `<button type="button" class="btn primary block" data-cashout>🏁 Encerrar jogo de ${esc(p.name)}</button>` : ''}
      <button type="button" class="btn small ghost pix-btn" data-pix>Pix: ${esc(S.pixOf(p.name) || 'cadastrar chave')} ✎</button>
      <ul class="entries">
        ${entries.map((e) => `<li class="${e.voided ? 'voided' : ''}">
           <div><strong>${e.voided ? 'Buy anulado' : e.pending ? '⏳ Aguardando aprovação' : `Buy #${e.seq}`}</strong><small>${hour(e.at)} · ${money(e.value)}</small>
             ${e.voided ? `<small class="neg">Motivo: ${esc(e.voided.reason)}</small>` : ''}</div>
           ${sigImg(e)}
-          ${e.voided ? '' : `<button class="btn small ghost" data-void="${e.id}">Anular</button>`}
+          ${e.voided || out ? '' : `<button class="btn small ghost" data-void="${e.id}">Anular</button>`}
         </li>`).join('') || '<li class="muted">Nenhum buy ainda.</li>'}
      </ul>
      <footer>
        <button type="button" class="btn ghost" data-rename>Renomear</button>
-       <button type="button" class="btn danger" data-remove ${st.buys ? 'disabled title="Anule os buys antes"' : ''}>Remover da mesa</button>
+       ${out
+         ? '<button type="button" class="btn danger" data-undo-out>Desfazer saída</button>'
+         : `<button type="button" class="btn danger" data-remove ${st.buys ? 'disabled title="Anule os buys antes"' : ''}>Remover da mesa</button>`}
      </footer>`,
     (root) => {
       loadSignatures(root, session.id);
@@ -876,12 +904,99 @@ function openPlayer(playerId) {
         if (name) attempt(() => S.renamePlayer(playerId, name));
         openPlayer(playerId);
       });
-      root.querySelector('[data-remove]').addEventListener('click', async () => {
+      root.querySelector('[data-cashout]')?.addEventListener('click', () => openCashOut(playerId));
+      root.querySelector('[data-undo-out]')?.addEventListener('click', async () => {
+        if (!(await requireAdmin('desfazer a saída de um jogador'))) return openPlayer(playerId);
+        const ok = await confirmDialog('Desfazer saída?', `${esc(p.name)} volta para a mesa e a contagem dele será refeita no fechamento.`, { confirmText: 'Desfazer saída', danger: true });
+        if (ok) { attempt(() => S.undoCashOut(playerId)); toast(`${p.name} voltou para a mesa`); }
+        openPlayer(playerId);
+      });
+      root.querySelector('[data-remove]')?.addEventListener('click', async () => {
         if (await confirmDialog('Remover jogador?', `${esc(p.name)} sai da mesa.`, { confirmText: 'Remover', danger: true })) {
           attempt(() => S.removePlayer(playerId));
         }
       });
     },
+  );
+}
+
+/** Encerrar o jogo de um jogador só: conta as fichas dele, mostra o valor e trava. */
+function openCashOut(playerId, preset = '') {
+  const { settings } = S.getState();
+  const p = S.getPlayer(playerId);
+  if (!p) return;
+  const st = S.playerStats(playerId);
+  const t = S.buyTerms(settings);
+  openModal(
+    `<header><h2>Encerrar jogo · ${esc(p.name)}</h2><button class="icon-btn" data-close aria-label="Fechar">✕</button></header>
+     <p class="muted">${plural(st.buys, 'buy', 'buys')} · pagou ${money(st.paid)}${st.pending ? ` · <span class="wait">${st.pending} aguardando aprovação</span>` : ''}</p>
+     ${st.pending ? '<p class="notice">Aprove ou recuse os buys pendentes dele antes de encerrar.</p>' : ''}
+     <label class="count big-count"><span>Fichas de ${esc(p.name)}</span>
+       <input class="field" data-co inputmode="numeric" pattern="[0-9]*" placeholder="0" value="${esc(preset)}" autocomplete="off" /></label>
+     <div class="buy-amount"><span>Recebe<small data-co-net></small></span><strong data-co-pay>—</strong></div>
+     <p class="muted small">${settings.rakeMode === 'perBuy' || settings.rakeMode === 'none'
+       ? `1 ficha = ${money(Math.round((t.value - t.rake) / t.chips))}. O valor já é o final.`
+       : 'Com esse tipo de rake, o valor é uma estimativa e se confirma no fechamento.'}</p>
+     <label class="confirm left"><input type="checkbox" data-co-ok /> ${esc(p.name)} conferiu a contagem</label>
+     <p class="error" hidden></p>
+     <footer><button type="button" class="btn ghost" data-close>Cancelar</button>
+       <button type="button" class="btn primary" data-co-go disabled>Encerrar jogo</button></footer>`,
+    (root) => {
+      const input = root.querySelector('[data-co]');
+      const okBox = root.querySelector('[data-co-ok]');
+      const go = root.querySelector('[data-co-go]');
+      const err = root.querySelector('.error');
+      const update = () => {
+        input.value = input.value.replace(/\D/g, '');
+        const has = input.value !== '';
+        const chips = has ? parseInt(input.value, 10) : 0;
+        const r = S.previewCashOut(playerId, chips);
+        root.querySelector('[data-co-pay]').textContent = has ? money(r.payout) : '—';
+        const netEl = root.querySelector('[data-co-net]');
+        netEl.textContent = has ? `saldo ${signed(r.net)}` : '';
+        netEl.className = has ? netClass(r.net) : '';
+        const over = has && chips > r.maxChips;
+        err.hidden = !over;
+        err.textContent = over ? `Não pode passar de ${num(r.maxChips)} fichas (total ainda em jogo).` : '';
+        go.disabled = !has || over || !okBox.checked || st.pending > 0;
+      };
+      input.addEventListener('input', () => { okBox.checked = false; update(); });
+      okBox.addEventListener('change', update);
+      go.addEventListener('click', async () => {
+        const chips = parseInt(input.value, 10);
+        if (!(await requireAdmin('encerrar o jogo de um jogador'))) return openCashOut(playerId, String(chips));
+        if (attempt(() => S.cashOut(playerId, chips)) === undefined && S.getPlayer(playerId)?.cashout) showCashOutDone(playerId);
+        else if (!S.getPlayer(playerId)?.cashout) openCashOut(playerId, String(chips));
+      });
+      update();
+      input.focus();
+    },
+  );
+}
+
+function cashOutMessage(p, r) {
+  const { settings } = S.getState();
+  const head = `♠ ${settings.groupName} — saída de ${p.name} (${hour(p.cashout.at)})`;
+  if (r.net < 0) return `${head}\n\n*A pagar:*\n${p.name} - ${money(-r.net)} - Pix: ${S.pixOf(p.name) || 'não cadastrado'}`;
+  if (r.net > 0) return `${head}\n\n*A receber:*\n${p.name} - ${money(r.net)}`;
+  return `${head}\n\n${p.name} saiu zerado (nada a pagar ou receber).`;
+}
+
+function showCashOutDone(playerId) {
+  const { settings } = S.getState();
+  const p = S.getPlayer(playerId);
+  const r = S.previewCashOut(playerId, p.cashout.chips);
+  const caixa = settings.paymentMode !== 'caixa';
+  const wa = whatsappLink(settings.caixaPhone, cashOutMessage(p, r));
+  openModal(
+    `<header><h2>🏁 ${esc(p.name)} saiu</h2><button class="icon-btn" data-close aria-label="Fechar">✕</button></header>
+     <div class="buy-amount"><span>${num(p.cashout.chips)} fichas<small>${plural(r.buys, 'buy', 'buys')} · pagou ${money(r.paid)}</small></span><strong>${money(r.payout)}</strong></div>
+     <p class="out-net">${r.net < 0 ? `${esc(p.name)} <strong>paga ${money(-r.net)}</strong>` : r.net > 0 ? `${esc(p.name)} <strong>recebe ${money(r.net)}</strong>` : `${esc(p.name)} saiu <strong>zerado</strong>`}${caixa ? ' no acerto com o caixa.' : '.'}${r.exact ? '' : ' (estimado)'}</p>
+     <p class="muted small">A contagem dele está travada e entra sozinha no fechamento da jogatina.</p>
+     <footer>
+       <button type="button" class="btn ghost" data-close>Fechar</button>
+       ${wa ? `<a class="btn primary whatsapp" href="${esc(wa)}" target="_blank" rel="noopener">Avisar o caixa</a>` : ''}
+     </footer>`,
   );
 }
 
@@ -1245,7 +1360,7 @@ app.addEventListener('input', (e) => {
   const t = e.target;
   if (t.name && t.closest('[data-form]')) t.dataset.dirty = '1';
   const countId = t.dataset.count;
-  if (!countId) return;
+  if (!countId || t.readOnly) return;
   const digits = t.value.replace(/\D/g, '');
   t.value = digits;
   // A mudança de contagem desmarca o "Conferido" daquele jogador (feito no store).

@@ -10,8 +10,9 @@ Controle das noites de poker com os amigos: buys por jogador, pote sempre visív
 2. **+ Buy:** escolha **quantos buys** (1 a 10) — o app mostra o total e **quantas assinaturas** serão necessárias. O jogador **assina uma vez para cada buy** ("Assinatura 2 de 3") e tudo vai como **um pedido só** para o admin. O pote, o número de buys e as fichas em jogo atualizam na hora, no topo da tela.
 3. **Aprovação do admin:** o buy fica **⏳ aguardando aprovação** e só entra no pote depois que o admin aprova (vendo a assinatura). O pedido aparece em destaque na mesa e no Admin, em todos os celulares — com todas as assinaturas juntas e os botões **Aprovar N buys** / **Recusar tudo**. No **aparelho do admin** (Admin → *Usar este aparelho como admin*) chega um aviso com vibração a cada pedido novo, e aprovar/recusar não pede PIN; em outro aparelho, aprovar pede o PIN. Buy lançado no próprio aparelho do admin já sai aprovado ("Confirmar e aprovar"). Recusados ficam no registro com o motivo. Não dá para fechar a jogatina com pedido pendente. Dá para desligar em Admin → Conferência.
 4. Errou? Um toque em **Desfazer** logo após o registro, ou toque no nome do jogador → *Anular* (pede motivo e, se configurado, PIN).
-5. **Finalizar jogatina:** conte as fichas de cada um, digite, e o jogador marca *Conferido*. Só dá para encerrar quando **a soma bate exatamente** com as fichas em jogo.
-6. **Resultado:** quanto cada um recebe e o saldo. O botão **Enviar para o caixa (WhatsApp)** abre a conversa com o caixa já com a mensagem pronta:
+5. **Alguém vai embora antes?** Toque no nome dele → **🏁 Encerrar jogo de Fulano**. Conte as fichas dele, o app mostra na hora quanto ele recebe e o saldo; ele confere e o admin confirma. A contagem fica **travada** (não dá para lançar mais buys nem mudar as fichas dele) e entra sozinha no fechamento. Na mesa ele aparece em **Já saíram**, e o botão **Avisar o caixa** manda no WhatsApp o "A pagar / A receber" só dele. Errou? *Desfazer saída* (pede o PIN).
+6. **Finalizar jogatina:** conte as fichas de cada um, digite, e o jogador marca *Conferido*. Só dá para encerrar quando **a soma bate exatamente** com as fichas em jogo.
+7. **Resultado:** quanto cada um recebe e o saldo. O botão **Enviar para o caixa (WhatsApp)** abre a conversa com o caixa já com a mensagem pronta:
    ```
    A pagar:
    Ian - R$ 60,00 - Pix: ian@email.com
@@ -20,9 +21,9 @@ Controle das noites de poker com os amigos: buys por jogador, pote sempre visív
    Davi - R$ 5,00
    Rake (fica no caixa): R$ 10,00
    ```
-7. **Histórico → Partidas:** as partidas encerradas, agrupadas por mês, com o campeão de cada mês (ou quem está liderando o mês atual).
-8. **Histórico → Ranking:** ranking **geral** e de **cada mês**, com ganhos (soma das noites no positivo), perdas (soma das noites no negativo), saldo, jogos e vitórias. Botão para compartilhar no grupo.
-9. **Apagar partida:** dá para apagar uma partida específica (🗑 na lista ou *Apagar partida* no resultado; pede o PIN, se houver).
+8. **Histórico → Partidas:** as partidas encerradas, agrupadas por mês, com o campeão de cada mês (ou quem está liderando o mês atual).
+9. **Histórico → Ranking:** ranking **geral** e de **cada mês**, com ganhos (soma das noites no positivo), perdas (soma das noites no negativo), saldo, jogos e vitórias. Botão para compartilhar no grupo.
+10. **Apagar partida:** dá para apagar uma partida específica (🗑 na lista ou *Apagar partida* no resultado; pede o PIN, se houver).
 
 **Admin (⚙︎):** nome do grupo, jogadores frequentes, caixa (nome + WhatsApp), chaves Pix dos jogadores, valor do buy, fichas por buy, rake (fichas por buy, % do pote ou fixo), forma de pagamento, PIN do admin, sincronização online e backup.
 

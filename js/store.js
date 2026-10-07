@@ -311,6 +311,7 @@ export const MAX_BUYS_PER_REQUEST = 10;
 export function addBuys(playerId, count = 1, signatures = []) {
   const session = requireSession();
   if (!getPlayer(playerId)) throw new Error('Jogador não encontrado');
+  if (getPlayer(playerId).cashout) throw new Error(`${getPlayer(playerId).name} já encerrou o jogo`);
   const n = Math.max(1, Math.min(MAX_BUYS_PER_REQUEST, Math.round(count)));
   if (view.settings.requireSignature && (signatures.length < n || signatures.some((x) => !x))) {
     throw new Error('Assinatura obrigatória em cada buy');
@@ -417,6 +418,7 @@ export function voidBuy(entryId, reason) {
   const session = requireSession();
   const e = session.ledger.find((x) => x.id === entryId && x.type === 'buy');
   if (!e || e.voided) return;
+  if (getPlayer(e.playerId)?.cashout) throw new Error('Esse jogador já encerrou o jogo. Desfaça a saída antes de anular buys dele.');
   const why = String(reason || '').trim() || 'Sem motivo';
   apply({
     [`session/ledger/${entryId}/voided`]: { at: Date.now(), reason: why },
@@ -443,14 +445,65 @@ export function playerStats(playerId) {
 
 export const totals = () => computeTotals(view.session?.ledger || [], view.settings);
 
+// ---------- Saída de um jogador (encerrar o jogo só dele) ----------
+/** Quanto o jogador receberia saindo agora com `chips` fichas. */
+export function previewCashOut(playerId, chips) {
+  const session = requireSession();
+  const r = computeSettlement(session, view.settings, { [playerId]: chips });
+  const row = r.rows.find((x) => x.playerId === playerId);
+  // Com rake por buy (ou sem rake) o valor da ficha é fixo; com % ou valor fixo na noite,
+  // o valor final só se confirma no fechamento.
+  const exact = view.settings.rakeMode === 'perBuy' || view.settings.rakeMode === 'none';
+  const otherOut = session.players.filter((p) => p.id !== playerId && p.cashout).reduce((a, p) => a + p.cashout.chips, 0);
+  return { ...row, exact, maxChips: r.totals.chips - otherOut };
+}
+
+export function cashOut(playerId, chips) {
+  requireSession();
+  const p = getPlayer(playerId);
+  if (!p) throw new Error('Jogador não encontrado');
+  if (p.cashout) throw new Error(`${p.name} já encerrou o jogo`);
+  if (pendingOf(view.session.ledger, playerId).length) throw new Error('Aprove ou recuse os buys pendentes dele antes');
+  const n = Number(chips);
+  if (!Number.isInteger(n) || n < 0) throw new Error('Informe a quantidade de fichas');
+  const { maxChips } = previewCashOut(playerId, n);
+  if (n > maxChips) throw new Error(`Não pode passar de ${maxChips} fichas (total ainda em jogo)`);
+  const now = Date.now();
+  apply({
+    [`session/players/${playerId}/cashout`]: { chips: n, at: now },
+    [`session/draft/counts/${playerId}`]: n,
+    [`session/draft/confirmed/${playerId}`]: now,
+    ...ledgerPath(entry('cashout', { playerId, chips: n })),
+  });
+}
+
+/** Volta o jogador para a mesa (ex.: saída registrada por engano). */
+export function undoCashOut(playerId) {
+  requireSession();
+  const p = getPlayer(playerId);
+  if (!p?.cashout) return;
+  apply({
+    [`session/players/${playerId}/cashout`]: null,
+    [`session/draft/counts/${playerId}`]: null,
+    [`session/draft/confirmed/${playerId}`]: null,
+    ...ledgerPath(entry('cashout_undo', { playerId, chips: p.cashout.chips })),
+  });
+}
+
 // ---------- Fechamento ----------
+const lockedOut = (playerId) => {
+  if (getPlayer(playerId)?.cashout) throw new Error('Jogador já encerrou o jogo — a contagem dele está travada');
+};
+
 export function setCount(playerId, chips) {
   requireSession();
+  lockedOut(playerId);
   apply({ [`session/draft/counts/${playerId}`]: chips, [`session/draft/confirmed/${playerId}`]: null });
 }
 
 export function setConfirmed(playerId, ok) {
   requireSession();
+  lockedOut(playerId);
   apply({ [`session/draft/confirmed/${playerId}`]: ok ? Date.now() : null });
 }
 
@@ -461,6 +514,10 @@ export function closeSession() {
   if (pendingBuys().length) throw new Error('Há buys aguardando aprovação do admin');
   const result = settlement(session.draft.counts);
   if (result.diff !== 0) throw new Error('A contagem de fichas não bate com o total em jogo');
+  for (const row of result.rows) {
+    const out = getPlayer(row.playerId)?.cashout;
+    if (out) row.leftAt = out.at;
+  }
   const raw = tree.session;
   const closed = {
     id: session.id,
