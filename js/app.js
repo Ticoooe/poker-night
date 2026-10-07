@@ -395,6 +395,12 @@ function caixaLists(s) {
   return { pagar, receber, rake: r.totals.rake };
 }
 
+/** Chave Pix do caixa: a cadastrada no Admin ou, se não houver, a do jogador com o nome do caixa. */
+const caixaPix = () => {
+  const { settings } = S.getState();
+  return settings.caixaPix || (settings.caixaName ? S.pixOf(settings.caixaName) : '');
+};
+
 function caixaMessage(s) {
   const { pagar, receber, rake } = caixaLists(s);
   const cfg = s.settingsAtClose || {};
@@ -402,10 +408,10 @@ function caixaMessage(s) {
     `♠ ${cfg.groupName || 'Poker'} — ${new Date(s.startedAt).toLocaleDateString('pt-BR')}`,
     '',
     '*A pagar:*',
-    ...(pagar.length ? pagar.map((x) => `${x.name} - ${money(x.amount)} - Pix: ${S.pixOf(x.name) || 'não cadastrado'}`) : ['Ninguém']),
+    ...(pagar.length ? pagar.map((x) => `${x.name} - ${money(x.amount)} - Pix do caixa: ${caixaPix() || 'não cadastrado'}`) : ['Ninguém']),
     '',
     '*A receber:*',
-    ...(receber.length ? receber.map((x) => `${x.name} - ${money(x.amount)}`) : ['Ninguém']),
+    ...(receber.length ? receber.map((x) => `${x.name} - ${money(x.amount)} - Pix: ${S.pixOf(x.name) || 'não cadastrado'}`) : ['Ninguém']),
     ...(rake ? ['', `Rake (fica no caixa): ${money(rake)}`] : []),
   ].join('\n');
 }
@@ -448,11 +454,12 @@ function viewResultado(id) {
     <section class="card caixa">
       <h2>Acerto com o caixa${settings.caixaName ? ` · ${esc(settings.caixaName)}` : ''}</h2>
       <h3>A pagar</h3>
-      <ul class="transfers">${lists.pagar.map((x) => `<li><span><strong>${esc(x.name)}</strong><small class="pix ${S.pixOf(x.name) ? '' : 'missing'}">Pix: ${esc(S.pixOf(x.name) || 'não cadastrado')}</small></span><strong class="neg">${money(x.amount)}</strong></li>`).join('') || '<li class="muted">Ninguém</li>'}</ul>
+      <ul class="transfers">${lists.pagar.map((x) => `<li><span><strong>${esc(x.name)}</strong><small class="pix ${caixaPix() ? '' : 'missing'}">Pix do caixa: ${esc(caixaPix() || 'não cadastrado')}</small></span><strong class="neg">${money(x.amount)}</strong></li>`).join('') || '<li class="muted">Ninguém</li>'}</ul>
       <h3>A receber</h3>
-      <ul class="transfers">${lists.receber.map((x) => `<li><span><strong>${esc(x.name)}</strong></span><strong class="pos">${money(x.amount)}</strong></li>`).join('') || '<li class="muted">Ninguém</li>'}</ul>
+      <ul class="transfers">${lists.receber.map((x) => `<li><span><strong>${esc(x.name)}</strong><small class="pix ${S.pixOf(x.name) ? '' : 'missing'}">Pix: ${esc(S.pixOf(x.name) || 'não cadastrado')}</small></span><strong class="pos">${money(x.amount)}</strong></li>`).join('') || '<li class="muted">Ninguém</li>'}</ul>
       ${lists.rake ? `<p class="muted small">Rake (fica no caixa): <strong>${money(lists.rake)}</strong></p>` : ''}
-      ${lists.pagar.some((x) => !S.pixOf(x.name)) ? '<p class="notice">Tem jogador sem chave Pix. Cadastre em Admin → Chaves Pix (a mensagem usa a chave atual).</p>' : ''}
+      ${lists.pagar.length && !caixaPix() ? '<p class="notice">Falta a chave Pix do caixa. Cadastre em Admin → Caixa (a mensagem usa a chave atual).</p>' : ''}
+      ${lists.receber.some((x) => !S.pixOf(x.name)) ? '<p class="notice">Tem jogador para receber sem chave Pix. Cadastre em Admin → Chaves Pix (a mensagem usa a chave atual).</p>' : ''}
       <div class="row wrap">
         ${wa ? `<a class="btn primary whatsapp" href="${esc(wa)}" target="_blank" rel="noopener">Enviar para o caixa (WhatsApp)</a>`
              : '<button class="btn primary whatsapp" data-action="caixa-phone">Enviar para o caixa (WhatsApp)</button>'}
@@ -679,9 +686,11 @@ function viewAdmin() {
         <label>Quem cuida do caixa<input class="field" name="caixaName" value="${esc(settings.caixaName)}" maxlength="30" placeholder="Nome" /></label>
         <label>WhatsApp do caixa<input class="field" name="caixaPhone" type="tel" inputmode="tel" value="${esc(settings.caixaPhone)}" placeholder="(11) 99999-9999" /></label>
       </div>
+      <label><span>Chave Pix do caixa <small class="muted">— vai na mensagem para quem precisa pagar</small></span>
+        <input class="field" name="caixaPix" value="${esc(settings.caixaPix)}" placeholder="CPF, celular, e-mail…" autocomplete="off" /></label>
 
       <h2>Chaves Pix dos jogadores</h2>
-      <p class="muted small" style="margin:0">Aparecem na mensagem do caixa, ao lado de quem precisa pagar.</p>
+      <p class="muted small" style="margin:0">Aparecem na mensagem do caixa, ao lado de quem tem a receber.</p>
       <div class="pix-list">${S.knownPlayers().map((n) => `<label class="pix-row"><span>${esc(n)}</span>
         <input class="field" name="pix:${esc(n)}" value="${esc(S.pixOf(n))}" placeholder="CPF, celular, e-mail…" autocomplete="off" /></label>`).join('')}</div>
 
@@ -981,8 +990,8 @@ function openCashOut(playerId, preset = '') {
 function cashOutMessage(p, r) {
   const { settings } = S.getState();
   const head = `♠ ${settings.groupName} — saída de ${p.name} (${hour(p.cashout.at)})`;
-  if (r.net < 0) return `${head}\n\n*A pagar:*\n${p.name} - ${money(-r.net)} - Pix: ${S.pixOf(p.name) || 'não cadastrado'}`;
-  if (r.net > 0) return `${head}\n\n*A receber:*\n${p.name} - ${money(r.net)}`;
+  if (r.net < 0) return `${head}\n\n*A pagar:*\n${p.name} - ${money(-r.net)} - Pix do caixa: ${caixaPix() || 'não cadastrado'}`;
+  if (r.net > 0) return `${head}\n\n*A receber:*\n${p.name} - ${money(r.net)} - Pix: ${S.pixOf(p.name) || 'não cadastrado'}`;
   return `${head}\n\n${p.name} saiu zerado (nada a pagar ou receber).`;
 }
 
@@ -1331,6 +1340,7 @@ app.addEventListener('submit', (e) => {
         groupName: String(data.get('groupName') || '').trim() || S.DEFAULT_SETTINGS.groupName,
         caixaName: String(data.get('caixaName') || '').trim(),
         caixaPhone: String(data.get('caixaPhone') || '').trim(),
+        caixaPix: String(data.get('caixaPix') || '').trim(),
         pix,
         regulars: String(data.get('regulars') || '').split(/[\n,]/).map((n) => n.trim().replace(/\s+/g, ' ')).filter(Boolean),
         requireSignature: data.get('requireSignature') === 'on',

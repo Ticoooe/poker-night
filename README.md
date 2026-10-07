@@ -15,17 +15,17 @@ Controle das noites de poker com os amigos: buys por jogador, pote sempre visív
 7. **Resultado:** quanto cada um recebe e o saldo. O botão **Enviar para o caixa (WhatsApp)** abre a conversa com o caixa já com a mensagem pronta:
    ```
    A pagar:
-   Ian - R$ 60,00 - Pix: ian@email.com
+   Ian - R$ 60,00 - Pix do caixa: caixa@email.com
    A receber:
-   Tico - R$ 45,00
-   Davi - R$ 5,00
+   Tico - R$ 45,00 - Pix: tico@email.com
+   Davi - R$ 5,00 - Pix: davi@email.com
    Rake (fica no caixa): R$ 10,00
    ```
 8. **Histórico → Partidas:** as partidas encerradas, agrupadas por mês, com o campeão de cada mês (ou quem está liderando o mês atual).
 9. **Histórico → Ranking:** ranking **geral** e de **cada mês**, com ganhos (soma das noites no positivo), perdas (soma das noites no negativo), saldo, jogos e vitórias. Botão para compartilhar no grupo.
 10. **Apagar partida:** dá para apagar uma partida específica (🗑 na lista ou *Apagar partida* no resultado; pede o PIN, se houver).
 
-**Admin (⚙︎):** nome do grupo, jogadores frequentes, caixa (nome + WhatsApp), chaves Pix dos jogadores, valor do buy, fichas por buy, rake (fichas por buy, % do pote ou fixo), forma de pagamento, PIN do admin, sincronização online e backup.
+**Admin (⚙︎):** nome do grupo, jogadores frequentes, caixa (nome, WhatsApp e chave Pix), chaves Pix dos jogadores, valor do buy, fichas por buy, rake (fichas por buy, % do pote ou fixo), forma de pagamento, PIN do admin, sincronização online e backup.
 
 ### Regras atuais do grupo
 

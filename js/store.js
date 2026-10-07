@@ -27,6 +27,7 @@ export const DEFAULT_SETTINGS = {
   adminPin: '',
   caixaName: '',
   caixaPhone: '', // WhatsApp de quem cuida do caixa
+  caixaPix: '', // chave Pix do caixa (quem paga manda para ela)
   pix: {}, // chave Pix por jogador (chave = pixKey(nome))
   regulars: ['Tico', 'Ian', 'Giovanni', 'Davi', 'Marlon', 'Titã', 'Maciel', 'Nikin', 'Jota', 'Kevin', 'Felipin'],
 };
