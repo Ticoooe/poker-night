@@ -932,18 +932,19 @@ function openCashOut(playerId, preset = '') {
      <p class="muted">${plural(st.buys, 'buy', 'buys')} · pagou ${money(st.paid)}${st.pending ? ` · <span class="wait">${st.pending} aguardando aprovação</span>` : ''}</p>
      ${st.pending ? '<p class="notice">Aprove ou recuse os buys pendentes dele antes de encerrar.</p>' : ''}
      <label class="count big-count"><span>Fichas de ${esc(p.name)}</span>
-       <input class="field" data-co inputmode="numeric" pattern="[0-9]*" placeholder="0" value="${esc(preset)}" autocomplete="off" /></label>
+       <input class="field" data-co inputmode="numeric" pattern="[0-9]*" placeholder="digite as fichas" value="${esc(preset)}" autocomplete="off" /></label>
+     <button type="button" class="btn small ghost" data-co-zero>Saiu zerado (0 fichas)</button>
      <div class="buy-amount"><span>Recebe<small data-co-net></small></span><strong data-co-pay>—</strong></div>
      <p class="muted small">${settings.rakeMode === 'perBuy' || settings.rakeMode === 'none'
        ? `1 ficha = ${money(Math.round((t.value - t.rake) / t.chips))}. O valor já é o final.`
        : 'Com esse tipo de rake, o valor é uma estimativa e se confirma no fechamento.'}</p>
-     <label class="confirm left"><input type="checkbox" data-co-ok /> ${esc(p.name)} conferiu a contagem</label>
      <p class="error" hidden></p>
+     <p class="muted small" data-co-why></p>
      <footer><button type="button" class="btn ghost" data-close>Cancelar</button>
        <button type="button" class="btn primary" data-co-go disabled>Encerrar jogo</button></footer>`,
     (root) => {
       const input = root.querySelector('[data-co]');
-      const okBox = root.querySelector('[data-co-ok]');
+      const why = root.querySelector('[data-co-why]');
       const go = root.querySelector('[data-co-go]');
       const err = root.querySelector('.error');
       const update = () => {
@@ -958,10 +959,13 @@ function openCashOut(playerId, preset = '') {
         const over = has && chips > r.maxChips;
         err.hidden = !over;
         err.textContent = over ? `Não pode passar de ${num(r.maxChips)} fichas (total ainda em jogo).` : '';
-        go.disabled = !has || over || !okBox.checked || st.pending > 0;
+        go.disabled = !has || over || st.pending > 0;
+        why.textContent = st.pending ? 'Aprove ou recuse os buys pendentes dele primeiro.'
+          : !has ? `Digite quantas fichas ${p.name} tem (ou toque em “Saiu zerado”).`
+          : over ? '' : `Ao encerrar, ${p.name} confirma a contagem de ${num(parseInt(input.value, 10))} fichas.`;
       };
-      input.addEventListener('input', () => { okBox.checked = false; update(); });
-      okBox.addEventListener('change', update);
+      input.addEventListener('input', update);
+      root.querySelector('[data-co-zero]').addEventListener('click', () => { input.value = '0'; update(); });
       go.addEventListener('click', async () => {
         const chips = parseInt(input.value, 10);
         if (!(await requireAdmin('encerrar o jogo de um jogador'))) return openCashOut(playerId, String(chips));
