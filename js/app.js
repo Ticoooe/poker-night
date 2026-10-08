@@ -1,11 +1,13 @@
 import * as S from './store.js';
 import { SignaturePad } from './signature.js';
 import { computeRanking, monthKey } from './calc.js';
+import { APP_VERSION } from './version.js';
 
 const app = document.getElementById('app');
 const dlg = document.getElementById('modal');
 const toastEl = document.getElementById('toast');
 const syncEl = document.getElementById('sync');
+const netbar = document.getElementById('netbar');
 
 // ---------- Formatação ----------
 const esc = (s) =>
@@ -124,6 +126,15 @@ function toast(msg, { action, onAction, timeout = 4000, type = '' } = {}) {
   toastTimer = setTimeout(() => { toastEl.className = ''; }, timeout);
 }
 
+async function attemptAsync(fn) {
+  try {
+    return await fn();
+  } catch (err) {
+    toast(err.message, { type: 'error', timeout: 7000 });
+    return undefined;
+  }
+}
+
 function attempt(fn) {
   try {
     return fn();
@@ -193,6 +204,7 @@ function pendingSection() {
     <section class="card pending-card" aria-live="polite">
       <h2>⏳ Aguardando aprovação (${plural(requests.length, 'pedido', 'pedidos')}${total > requests.length ? ` · ${total} buys` : ''})</h2>
       <p class="muted small">${admin ? 'Confira as assinaturas e se as fichas foram entregues.' : 'O admin precisa aprovar. Os buys só entram no pote depois disso.'}</p>
+      ${requests.length > 1 ? `<button class="btn primary block" data-action="approve-all">${admin ? '' : '🔒 '}Aprovar todos (${plural(total, 'buy', 'buys')})</button>` : ''}
       <ul class="entries approvals">
         ${requests.map((r) => {
           const n = r.entries.length;
@@ -209,6 +221,20 @@ function pendingSection() {
         }).join('')}
       </ul>
     </section>`;
+}
+
+/** Aviso de acertos de Pix de noites anteriores que ainda não foram marcados como feitos. */
+function owedBanner() {
+  const open = S.openSettlements();
+  if (!open.length) return '';
+  const shortDay = (ts) => new Date(ts).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+  const shown = open.slice(0, 4).map((x) => `<li><strong>${esc(x.name)}</strong> ${x.kind === 'pagar' ? 'deve' : 'tem a receber'} ${money(x.amount)} <small>(${shortDay(x.startedAt)})</small></li>`).join('');
+  return `
+    <a class="card owed" href="#/resultado/${open[0].sessionId}">
+      <h2>💸 Acertos pendentes (${open.length})</h2>
+      <ul>${shown}${open.length > 4 ? `<li class="muted">+ ${open.length - 4}…</li>` : ''}</ul>
+      <small class="muted">Já acertou? Toque aqui e marque no resultado da noite.</small>
+    </a>`;
 }
 
 // ---------- Views ----------
@@ -234,7 +260,8 @@ function viewStart() {
       ${pendingNames.length ? `<p class="label">Na mesa (${pendingNames.length})</p>
         <div class="chips">${pendingNames.map((n) => `<button class="chip on" data-action="pending-toggle" data-name="${esc(n)}">${esc(n)} ✕</button>`).join('')}</div>` : '<p class="muted small">Adicione pelo menos 2 jogadores (dá para incluir mais durante o jogo).</p>'}
     </section>
-    <button class="btn primary big block" data-action="start" ${pendingNames.length < 2 ? 'disabled' : ''}>Começar jogatina</button>`;
+    <button class="btn primary big block" data-action="start" ${pendingNames.length < 2 ? 'disabled' : ''}>Começar jogatina</button>
+    ${owedBanner()}`;
 }
 
 function viewMesa() {
@@ -272,6 +299,7 @@ function viewMesa() {
       ${frequent.length ? `<div class="chips">${frequent.map((n) => `<button class="chip" data-action="player-quick" data-name="${esc(n)}">+ ${esc(n)}</button>`).join('')}</div>` : ''}
     </section>
     <a class="btn primary big block" href="#/fechar">Finalizar jogatina</a>
+    ${owedBanner()}
     ${recent.length ? `
     <section class="card">
       <h2>Últimos registros</h2>
@@ -423,6 +451,11 @@ function whatsappLink(phone, text) {
   return `https://wa.me/${digits}?text=${encodeURIComponent(text)}`;
 }
 
+function settleBtn(sessionId, x) {
+  const label = x.kind === 'pagar' ? 'Pago' : 'Recebido';
+  return `<button class="settle ${x.settledAt ? 'on' : ''}" data-action="settle" data-id="${sessionId}" data-player="${x.playerId}" aria-pressed="${Boolean(x.settledAt)}">${x.settledAt ? `✓ ${label}` : `Marcar ${label.toLowerCase()}`}</button>`;
+}
+
 function viewResultado(id) {
   const s = S.getHistorySession(id);
   if (!s) return `<section class="card"><p>Jogatina não encontrada.</p><a class="btn" href="#/historico">Voltar</a></section>`;
@@ -432,6 +465,8 @@ function viewResultado(id) {
   const caixa = cfg.paymentMode === 'caixa';
   const { settings } = S.getState();
   const lists = caixaLists(s);
+  const items = S.settlementItems(s);
+  const openCount = items.filter((x) => !x.settledAt).length;
   const wa = whatsappLink(settings.caixaPhone, caixaMessage(s));
   return `
     <section class="hero small">
@@ -453,10 +488,13 @@ function viewResultado(id) {
     </section>
     <section class="card caixa">
       <h2>Acerto com o caixa${settings.caixaName ? ` · ${esc(settings.caixaName)}` : ''}</h2>
+      ${items.length ? `<p class="settle-status ${openCount ? '' : 'done'}">${openCount ? `${items.length - openCount} de ${items.length} acertos feitos` : '✅ Todos os acertos feitos'}</p>` : ''}
       <h3>A pagar</h3>
-      <ul class="transfers">${lists.pagar.map((x) => `<li><span><strong>${esc(x.name)}</strong><small class="pix ${caixaPix() ? '' : 'missing'}">Pix do caixa: ${esc(caixaPix() || 'não cadastrado')}</small></span><strong class="neg">${money(x.amount)}</strong></li>`).join('') || '<li class="muted">Ninguém</li>'}</ul>
+      <ul class="transfers">${items.filter((x) => x.kind === 'pagar').map((x) => `<li class="${x.settledAt ? 'is-settled' : ''}"><span><strong>${esc(x.name)}</strong><small class="pix ${caixaPix() ? '' : 'missing'}">Pix do caixa: ${esc(caixaPix() || 'não cadastrado')}</small></span>
+        <span class="right"><strong class="neg">${money(x.amount)}</strong>${settleBtn(s.id, x)}</span></li>`).join('') || '<li class="muted">Ninguém</li>'}</ul>
       <h3>A receber</h3>
-      <ul class="transfers">${lists.receber.map((x) => `<li><span><strong>${esc(x.name)}</strong><small class="pix ${S.pixOf(x.name) ? '' : 'missing'}">Pix: ${esc(S.pixOf(x.name) || 'não cadastrado')}</small></span><strong class="pos">${money(x.amount)}</strong></li>`).join('') || '<li class="muted">Ninguém</li>'}</ul>
+      <ul class="transfers">${items.filter((x) => x.kind === 'receber').map((x) => `<li class="${x.settledAt ? 'is-settled' : ''}"><span><strong>${esc(x.name)}</strong><small class="pix ${S.pixOf(x.name) ? '' : 'missing'}">Pix: ${esc(S.pixOf(x.name) || 'não cadastrado')}</small></span>
+        <span class="right"><strong class="pos">${money(x.amount)}</strong>${settleBtn(s.id, x)}</span></li>`).join('') || '<li class="muted">Ninguém</li>'}</ul>
       ${lists.rake ? `<p class="muted small">Rake (fica no caixa): <strong>${money(lists.rake)}</strong></p>` : ''}
       ${lists.pagar.length && !caixaPix() ? '<p class="notice">Falta a chave Pix do caixa. Cadastre em Admin → Caixa (a mensagem usa a chave atual).</p>' : ''}
       ${lists.receber.some((x) => !S.pixOf(x.name)) ? '<p class="notice">Tem jogador para receber sem chave Pix. Cadastre em Admin → Chaves Pix (a mensagem usa a chave atual).</p>' : ''}
@@ -465,6 +503,7 @@ function viewResultado(id) {
              : '<button class="btn primary whatsapp" data-action="caixa-phone">Enviar para o caixa (WhatsApp)</button>'}
         <button class="btn" data-action="copy-caixa" data-id="${s.id}">Copiar mensagem</button>
       </div>
+      ${openCount > 1 ? `<button class="btn ghost block" data-action="settle-all" data-id="${s.id}">Marcar todos como acertados</button>` : ''}
     </section>
     ${caixa ? '' : `
     <details class="card">
@@ -477,7 +516,7 @@ function viewResultado(id) {
     </div>
     <div class="row wrap">
       <a class="btn ghost" href="#/historico">Histórico</a>
-      <button class="btn danger" data-action="delete-session" data-id="${s.id}">Apagar partida</button>
+      <button class="btn danger" data-action="delete-session" data-id="${s.id}">Mandar para a lixeira</button>
     </div>`;
 }
 
@@ -531,13 +570,30 @@ function historyTabs(active) {
   </nav>`;
 }
 
+function trashSection() {
+  const { trash } = S.getState();
+  if (!trash.length) return '';
+  return `
+    <details class="card trash-card">
+      <summary><h2>🗑 Lixeira (${trash.length})</h2></summary>
+      <p class="muted small">Partidas apagadas ficam aqui até alguém esvaziar a lixeira. Restaurar devolve a partida ao histórico e ao ranking.</p>
+      <ul class="transfers">${trash.map((x) => `<li><span><strong>${day(x.startedAt)}</strong><small class="muted">Pote ${money(x.result.totals.pot)} · apagada em ${new Date(x.deletedAt).toLocaleDateString('pt-BR')}</small></span>
+        <span class="trash-actions"><button class="btn small" data-action="restore-session" data-id="${x.id}">Restaurar</button>
+        <button class="btn small danger" data-action="purge-session" data-id="${x.id}">Excluir de vez</button></span></li>`).join('')}</ul>
+      <button class="btn danger block" data-action="empty-trash">Esvaziar lixeira</button>
+    </details>`;
+}
+
 function viewHistorico() {
   const { history } = S.getState();
-  if (!history.length) return `<section class="hero"><h1>Histórico</h1><p class="muted">Nenhuma jogatina encerrada ainda.</p></section>`;
+  if (!history.length) return `<section class="hero"><h1>Histórico</h1><p class="muted">Nenhuma jogatina encerrada ainda.</p></section>${trashSection()}`;
   const current = monthKey(Date.now());
+  const owedBySession = new Map();
+  for (const x of S.openSettlements()) owedBySession.set(x.sessionId, (owedBySession.get(x.sessionId) || 0) + 1);
   return `
     <section class="hero small"><h1>Histórico</h1><p class="muted">${plural(history.length, 'jogatina', 'jogatinas')}</p></section>
     ${historyTabs('partidas')}
+    ${owedBanner()}
     ${byMonth(history).map(([key, sessions]) => {
       const champ = computeRanking(sessions)[0];
       const pot = sessions.reduce((a, x) => a + x.result.totals.pot, 0);
@@ -551,13 +607,14 @@ function viewHistorico() {
           ${sessions.map((x) => {
             const best = [...x.result.rows].sort((a, b) => b.net - a.net)[0];
             return `<div class="history-row"><a class="history-item" href="#/resultado/${x.id}">
-              <span><strong>${day(x.startedAt)}</strong><small>${plural(x.players.length, 'jogador', 'jogadores')} · ${plural(x.result.totals.count, 'buy', 'buys')}</small></span>
+              <span><strong>${day(x.startedAt)}</strong><small>${plural(x.players.length, 'jogador', 'jogadores')} · ${plural(x.result.totals.count, 'buy', 'buys')}</small>${owedBySession.get(x.id) ? `<small class="owed-tag">💸 ${plural(owedBySession.get(x.id), 'acerto pendente', 'acertos pendentes')}</small>` : ''}</span>
               <span class="right"><strong>${money(x.result.totals.pot)}</strong>${best && best.net > 0 ? `<small>🏆 ${esc(best.name)} ${signed(best.net)}</small>` : ''}</span>
-            </a><button class="icon-btn trash" data-action="delete-session" data-id="${x.id}" aria-label="Apagar partida de ${day(x.startedAt)}" title="Apagar partida">🗑</button></div>`;
+            </a><button class="icon-btn trash" data-action="delete-session" data-id="${x.id}" aria-label="Mandar partida de ${day(x.startedAt)} para a lixeira" title="Mandar para a lixeira">🗑</button></div>`;
           }).join('')}
         </div>
       </section>`;
-    }).join('')}`;
+    }).join('')}
+    ${trashSection()}`;
 }
 
 function rankingData(period) {
@@ -729,6 +786,16 @@ function viewAdmin() {
     </form>
 
     <section class="card">
+      <h2>Juntar jogadores</h2>
+      <p class="muted small">Para quando a mesma pessoa aparece com dois nomes (ex.: “Tita” e “Titã”). O histórico, o ranking e a chave Pix passam a usar o nome certo.</p>
+      <div class="form merge"><div class="grid2">
+        <label for="merge-from">Nome errado<select class="field" id="merge-from">${S.knownPlayers().map((n) => `<option>${esc(n)}</option>`).join('')}</select></label>
+        <label for="merge-to">Nome certo<select class="field" id="merge-to">${S.knownPlayers().map((n, i) => `<option ${i === 1 ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>
+      </div></div>
+      <button class="btn" data-action="merge-players">Juntar</button>
+    </section>
+
+    <section class="card">
       <h2>Backup</h2>
       <p class="muted small">Exporte um backup de vez em quando (${(S.storageSize() / 1024).toFixed(0)} KB em cache neste aparelho).</p>
       <div class="row wrap">
@@ -741,7 +808,7 @@ function viewAdmin() {
       <h2>Zona de perigo</h2>
       <div class="row wrap">
         <button class="btn danger" data-action="cancel-session" ${session ? '' : 'disabled'}>Descartar jogatina atual</button>
-        <button class="btn danger" data-action="clear-history" ${history.length ? '' : 'disabled'}>Apagar histórico</button>
+        <button class="btn danger" data-action="clear-history" ${history.length ? '' : 'disabled'}>Mandar histórico para a lixeira</button>
       </div>
     </section>`;
 }
@@ -1174,15 +1241,17 @@ app.addEventListener('click', async (e) => {
       pendingNames = pendingNames.includes(name) ? pendingNames.filter((n) => n !== name) : [...pendingNames, name];
       return render();
     case 'start':
-      attempt(() => S.startSession(pendingNames));
+      el.disabled = true;
+      await attemptAsync(() => S.startSession(pendingNames));
       if (S.getState().session) pendingNames = [];
       return render();
     case 'close-session': {
       const r = S.settlement(S.getState().session.draft.counts);
       const ok = await confirmDialog('Encerrar jogatina?', `Pote de <strong>${money(r.totals.pot)}</strong>, ${num(r.totals.chips)} fichas conferidas. Depois de encerrar, não dá mais para lançar buys.`, { confirmText: 'Encerrar' });
       if (!ok) return;
-      const sid = attempt(() => S.closeSession());
-      if (sid) location.hash = `#/resultado/${sid}`;
+      toast('Encerrando…', { timeout: 15000 });
+      const sid = await attemptAsync(() => S.closeSession());
+      if (sid) { toast('Jogatina encerrada'); location.hash = `#/resultado/${sid}`; }
       return;
     }
     case 'share': {
@@ -1238,11 +1307,62 @@ app.addEventListener('click', async (e) => {
     case 'delete-session': {
       const s = S.getHistorySession(id);
       if (!s) return;
-      const ok = await confirmDialog('Apagar esta partida?', `A partida de <strong>${day(s.startedAt)}</strong> (pote de ${money(s.result.totals.pot)}) e as assinaturas dela serão apagadas para todos. Não dá para desfazer.`, { confirmText: 'Apagar', danger: true });
+      const ok = await confirmDialog('Mandar para a lixeira?', `A partida de <strong>${day(s.startedAt)}</strong> (pote de ${money(s.result.totals.pot)}) sai do histórico e do ranking. Dá para restaurar pela lixeira, no fim do Histórico.`, { confirmText: 'Mandar para a lixeira', danger: true });
       if (!ok) return;
       S.deleteHistorySession(id);
-      toast('Partida apagada');
+      toast('Partida na lixeira', { action: 'Desfazer', timeout: 8000, onAction: () => { S.restoreHistorySession(id); toast('Partida restaurada'); } });
       if (location.hash.startsWith('#/resultado/')) location.hash = '#/historico';
+      return;
+    }
+    case 'approve-all': {
+      if (!(await requireAdmin('aprovar buys'))) return;
+      const n = S.pendingRequests().reduce((a, r) => a + S.approveRequest(r.key), 0);
+      if (n) toast(`${plural(n, 'buy aprovado', 'buys aprovados')} ✓`);
+      return;
+    }
+    case 'settle': {
+      if (!(await requireAdmin('marcar acertos'))) return;
+      const s = S.getHistorySession(id);
+      const item = s && S.settlementItems(s).find((x) => x.playerId === el.dataset.player);
+      if (item) S.setSettled(id, item.playerId, !item.settledAt);
+      return;
+    }
+    case 'settle-all':
+      if (!(await requireAdmin('marcar acertos'))) return;
+      if (await confirmDialog('Marcar todos como acertados?', 'Use quando todos os Pix desta noite já foram feitos.', { confirmText: 'Marcar todos' })) {
+        S.settleAll(id);
+        toast('Acertos marcados ✓');
+      }
+      return;
+    case 'restore-session':
+      S.restoreHistorySession(id);
+      toast('Partida restaurada');
+      return;
+    case 'purge-session':
+      if (!(await requireAdmin('excluir de vez'))) return;
+      if (await confirmDialog('Excluir de vez?', 'A partida e as assinaturas dela somem para sempre. Não dá para desfazer.', { confirmText: 'Excluir de vez', danger: true })) {
+        S.purgeHistorySession(id);
+        toast('Partida excluída');
+      }
+      return;
+    case 'empty-trash':
+      if (!(await requireAdmin('esvaziar a lixeira'))) return;
+      if (await confirmDialog('Esvaziar a lixeira?', `${plural(S.getState().trash.length, 'partida some', 'partidas somem')} para sempre, com as assinaturas. Não dá para desfazer.`, { confirmText: 'Esvaziar', danger: true })) {
+        S.emptyTrash();
+        toast('Lixeira esvaziada');
+      }
+      return;
+    case 'merge-players': {
+      const from = app.querySelector('#merge-from').value;
+      const to = app.querySelector('#merge-to').value;
+      if (S.nameKey(from) === S.nameKey(to)) return toast('Escolha dois nomes diferentes', { type: 'error' });
+      const pv = S.mergePreview(from, to);
+      if (pv.conflicts.length || pv.inSession) return toast(`${from} e ${to} jogaram na mesma noite. Não dá para juntar.`, { type: 'error', timeout: 7000 });
+      if (!(await requireAdmin('juntar jogadores'))) return;
+      const ok = await confirmDialog('Juntar jogadores?', `<strong>${esc(from)}</strong> vira <strong>${esc(to)}</strong> em ${plural(pv.sessions, 'partida', 'partidas')}, no ranking, nos frequentes e no Pix.`, { confirmText: 'Juntar' });
+      if (!ok) return;
+      const n = attempt(() => S.mergePlayers(from, to));
+      if (n !== undefined) toast(`Pronto: ${from} agora é ${to}`);
       return;
     }
     case 'admin-unlock':
@@ -1289,14 +1409,18 @@ app.addEventListener('click', async (e) => {
     }
     case 'cancel-session':
       if (await confirmDialog('Descartar jogatina?', 'Todos os buys desta jogatina serão perdidos. Isso não pode ser desfeito.', { confirmText: 'Descartar', danger: true })) {
-        S.cancelSession();
-        toast('Jogatina descartada');
+        try {
+          await S.cancelSession();
+          toast('Jogatina descartada');
+        } catch (err) {
+          toast(err.message, { type: 'error', timeout: 7000 });
+        }
       }
       return;
     case 'clear-history':
-      if (await confirmDialog('Apagar histórico?', 'Todas as jogatinas encerradas serão apagadas. Exporte um backup antes.', { confirmText: 'Apagar tudo', danger: true })) {
+      if (await confirmDialog('Mandar histórico para a lixeira?', 'Todas as jogatinas encerradas vão para a lixeira (dá para restaurar no fim do Histórico).', { confirmText: 'Mandar tudo', danger: true })) {
         S.clearHistory();
-        toast('Histórico apagado');
+        toast('Histórico na lixeira');
       }
       return;
     default:
@@ -1311,9 +1435,9 @@ app.addEventListener('submit', (e) => {
   form.querySelectorAll('[data-dirty]').forEach((el) => delete el.dataset.dirty);
   switch (form.dataset.form) {
     case 'pending-add': {
-      const n = String(data.get('name') || '').trim().replace(/\s+/g, ' ');
+      const n = S.canonicalName(data.get('name'));
       if (!n) return;
-      if (pendingNames.some((x) => x.toLowerCase() === n.toLowerCase())) return toast(`"${n}" já está na lista`, { type: 'error' });
+      if (pendingNames.some((x) => S.nameKey(x) === S.nameKey(n))) return toast(`"${n}" já está na lista`, { type: 'error' });
       pendingNames.push(n);
       render();
       app.querySelector('[data-form="pending-add"] input')?.focus();
@@ -1402,11 +1526,100 @@ app.addEventListener('change', async (e) => {
   } else if (t.matches('[data-import]') && t.files[0]) {
     const text = await t.files[0].text();
     if (await confirmDialog('Importar backup?', 'Os dados atuais serão substituídos pelos do arquivo.', { confirmText: 'Importar', danger: true })) {
-      attempt(() => { S.importData(text); toast('Backup importado'); });
+      try {
+        await S.importData(text);
+        toast('Backup importado');
+      } catch (err) {
+        toast(err.message, { type: 'error', timeout: 7000 });
+      }
     }
     t.value = '';
   }
 });
 
+// ---------- Conexão, tela ligada e versão ----------
+/** Faixa no topo: sem conexão, lançamentos guardados no aparelho ou descartados. */
+function renderNetbar() {
+  const s = S.syncInfo();
+  let html = '';
+  let tone = 'warn';
+  if (s.dropped) {
+    tone = 'error';
+    html = `<span>${plural(s.dropped, 'lançamento não foi enviado', 'lançamentos não foram enviados')}: a jogatina já tinha sido encerrada ou descartada em outro celular.</span><button type="button" data-net-ok>OK</button>`;
+  } else if (s.mode === 'offline' || s.mode === 'error') {
+    tone = s.mode === 'error' ? 'error' : 'warn';
+    const what = s.mode === 'error' ? `Erro de conexão${s.error ? ` (${esc(s.error)})` : ''}.` : 'Sem conexão.';
+    html = `<span><strong>${what}</strong> ${s.pending ? `${plural(s.pending, 'lançamento guardado', 'lançamentos guardados')} neste celular — vão ser enviados quando a internet voltar.` : 'O que você lançar fica guardado e é enviado quando a internet voltar.'}</span>`;
+  } else if (s.pending && s.mode === 'online') {
+    tone = 'info';
+    html = `<span>Enviando ${plural(s.pending, 'lançamento', 'lançamentos')}…</span>`;
+  }
+  netbar.hidden = !html;
+  netbar.className = `netbar ${tone}`;
+  netbar.innerHTML = html;
+  netbar.querySelector('[data-net-ok]')?.addEventListener('click', () => S.clearDropped());
+}
+S.subscribe(renderNetbar);
+
+// Avisa antes de fechar/recarregar com lançamentos ainda não enviados.
+window.addEventListener('beforeunload', (e) => {
+  if (S.syncInfo().pending) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
+
+// Mantém a tela ligada enquanto houver jogatina aberta.
+let wakeLock = null;
+let wakeBusy = false;
+async function keepAwake() {
+  const want = Boolean(S.getState().session) && document.visibilityState === 'visible';
+  if (wakeBusy || !('wakeLock' in navigator)) return;
+  wakeBusy = true;
+  try {
+    if (want && !wakeLock) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    } else if (!want && wakeLock) {
+      await wakeLock.release();
+      wakeLock = null;
+    }
+  } catch {
+    wakeLock = null; // o navegador pode recusar (economia de bateria etc.)
+  } finally {
+    wakeBusy = false;
+  }
+}
+S.subscribe(keepAwake);
+
+// Avisa quando sai uma versão nova do app e atualiza todos os arquivos de uma vez.
+const APP_FILES = ['./', 'index.html', 'manifest.webmanifest', 'css/styles.css', 'js/app.js', 'js/store.js', 'js/calc.js', 'js/sync.js', 'js/signature.js', 'js/firebase-config.js', 'js/version.js'];
+const updatebar = document.getElementById('updatebar');
+async function checkVersion() {
+  try {
+    const r = await fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' });
+    if (!r.ok) return;
+    const { version } = await r.json();
+    updatebar.hidden = !version || version === APP_VERSION;
+  } catch {
+    /* sem internet: tenta de novo depois */
+  }
+}
+updatebar.addEventListener('click', async (e) => {
+  if (!e.target.closest('[data-update]')) return;
+  e.target.disabled = true;
+  e.target.textContent = 'Atualizando…';
+  await Promise.all(APP_FILES.map((f) => fetch(f, { cache: 'reload' }).catch(() => null)));
+  location.reload();
+});
+setInterval(checkVersion, 60 * 1000);
+document.addEventListener('visibilitychange', () => {
+  keepAwake();
+  if (document.visibilityState === 'visible') checkVersion();
+});
+
 render();
+renderNetbar();
+keepAwake();
+checkVersion();
 handleInviteLink();

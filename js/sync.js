@@ -31,6 +31,14 @@ export async function connect(config, code, handlers = {}) {
     update: (updates) => db.update(ref(), updates),
     set: (value) => db.set(ref(), value),
     get: async (path) => (await db.get(ref(path))).val(),
+    /**
+     * Transação no servidor: `fn(valorAtual)` devolve o novo valor, ou `undefined` para desistir.
+     * Se outro celular mudou o dado, o Firebase chama `fn` de novo com o valor real.
+     */
+    transaction: async (path, fn) => {
+      const r = await db.runTransaction(ref(path), fn, { applyLocally: false });
+      return { committed: r.committed, value: r.snapshot.val() };
+    },
     close: () => unsubs.forEach((u) => u()),
   };
 }
