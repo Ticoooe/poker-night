@@ -40,10 +40,17 @@ const listeners = new Set();
 // ---------- Conexão ----------
 const group = readJSON(GROUP_KEY);
 const cacheKey = group ? `poker-night:cache:${group.code}` : LOCAL_KEY;
+// Fila de lançamentos ainda não confirmados pelo servidor. Fica salva no aparelho:
+// se o celular recarregar sem internet, nada se perde e tudo é reenviado depois.
+const outboxKey = group ? `poker-night:outbox:${group.code}` : null;
+let outbox = group ? readJSON(outboxKey) || [] : [];
 let tree = loadTree();
+overlayOutbox();
 let view = derive(tree);
 let remote = null;
-let sync = { mode: group ? 'connecting' : 'local', code: group?.code ?? null, error: null };
+let sessionLoaded = false; // só reenvia a fila depois de saber qual jogatina está no servidor
+let flushing = false;
+let sync = { mode: group ? 'connecting' : 'local', code: group?.code ?? null, error: null, dropped: 0 };
 
 function readJSON(key) {
   try {
@@ -80,6 +87,54 @@ function migrateLegacy() {
   });
 }
 
+function saveOutbox() {
+  try {
+    localStorage.setItem(outboxKey, JSON.stringify(outbox));
+  } catch {
+    /* sem espaço: a fila continua na memória */
+  }
+}
+
+function touchesSession(updates) {
+  return Object.keys(updates).some((k) => k === 'session' || k.startsWith('session/'));
+}
+
+/** Reaplica na tela o que ainda está na fila (o servidor ainda não tem). */
+function overlayOutbox(onlyKey) {
+  for (const item of outbox) {
+    if (touchesSession(item.updates) && tree.session?.id !== item.sessionId) continue;
+    for (const [path, value] of Object.entries(item.updates)) {
+      if (!onlyKey || path === onlyKey || path.startsWith(`${onlyKey}/`)) setPath(tree, path, value);
+    }
+  }
+}
+
+async function flushOutbox() {
+  if (!remote || !sessionLoaded || flushing) return;
+  flushing = true;
+  try {
+    while (outbox.length) {
+      const item = outbox[0];
+      // Lançamento de uma jogatina que já foi encerrada/descartada em outro celular: não reenvia,
+      // senão recriaria pedaços de uma mesa que não existe mais.
+      if (touchesSession(item.updates) && tree.session?.id !== item.sessionId) {
+        sync = { ...sync, dropped: sync.dropped + 1 };
+      } else {
+        try {
+          await remote.update(item.updates);
+        } catch (err) {
+          sync = { ...sync, error: err.message, dropped: sync.dropped + 1 };
+        }
+      }
+      outbox = outbox.filter((x) => x.id !== item.id);
+      saveOutbox();
+      notify();
+    }
+  } finally {
+    flushing = false;
+  }
+}
+
 function settingsOf(raw) {
   // Grupos que ainda usam o nome padrão antigo passam a usar o novo.
   if (raw && OLD_DEFAULT_NAMES.includes(raw.groupName)) raw = { ...raw, groupName: DEFAULT_SETTINGS.groupName };
@@ -102,14 +157,20 @@ function sessionOf(raw) {
 }
 
 function derive(t) {
-  const history = Object.values(t.history || {})
+  const all = Object.values(t.history || {})
     .map((s) => {
       const x = sessionOf(s);
       x.result = { ...x.result, rows: x.result?.rows || [], transfers: x.result?.transfers || [] };
+      x.settled = { ...(s.settled || {}) };
       return x;
     })
     .sort((a, b) => b.closedAt - a.closedAt);
-  return { settings: settingsOf(t.settings), session: sessionOf(t.session), history };
+  return {
+    settings: settingsOf(t.settings),
+    session: sessionOf(t.session),
+    history: all.filter((x) => !x.deletedAt),
+    trash: all.filter((x) => x.deletedAt).sort((a, b) => b.deletedAt - a.deletedAt),
+  };
 }
 
 function saveLocal() {
@@ -144,13 +205,37 @@ function setPath(obj, path, value) {
 
 function apply(updates) {
   const cleaned = Object.fromEntries(Object.entries(updates).map(([k, v]) => [k, clean(v)]));
+  const sessionId = tree.session?.id ?? null;
   for (const [path, value] of Object.entries(cleaned)) setPath(tree, path, value);
+  if (group) {
+    outbox.push({ id: uid(), at: Date.now(), sessionId, updates: cleaned });
+    saveOutbox();
+  }
   saveLocal();
   notify();
-  remote?.update(cleaned).catch((err) => {
-    sync = { ...sync, error: err.message };
-    notify();
-  });
+  flushOutbox();
+}
+
+/** Ações que mexem na mesa inteira só rodam online e depois que a fila foi enviada. */
+async function requireServer() {
+  if (!group) return false;
+  if (!remote || sync.mode !== 'online') throw new Error('Sem conexão. Espere a internet voltar para fazer isso.');
+  for (let waited = 0; outbox.length && waited < 8000; waited += 200) {
+    flushOutbox();
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  if (outbox.length) throw new Error('Ainda há lançamentos sendo enviados. Espere um instante e tente de novo.');
+  return true;
+}
+
+/** Resumo do que importa na mesa, para conferir se o servidor está igual à tela. */
+function fingerprint(s) {
+  if (!s) return '';
+  const byId = (a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
+  const ledger = Object.values(s.ledger || {}).map((e) => [e.id, e.voided ? 1 : 0, e.pending ? 1 : 0]).sort(byId);
+  const players = Object.values(s.players || {}).map((p) => [p.id, p.cashout?.chips ?? null]).sort(byId);
+  const counts = Object.entries(s.draft?.counts || {}).sort(byId);
+  return JSON.stringify([s.id, ledger, players, counts]);
 }
 
 if (group) {
@@ -159,11 +244,15 @@ if (group) {
     onStatus: (mode) => {
       sync = { ...sync, mode, error: mode === 'online' ? null : sync.error };
       notify();
+      if (mode === 'online') flushOutbox();
     },
     onData: (key, value) => {
       tree[key] = value;
+      overlayOutbox(key);
+      if (key === 'session') sessionLoaded = true;
       saveLocal();
       notify();
+      flushOutbox();
     },
     onError: (err) => {
       sync = { ...sync, mode: 'error', error: err.message };
@@ -187,7 +276,8 @@ window.addEventListener('storage', (e) => {
 export const getState = () => view;
 export const subscribe = (fn) => listeners.add(fn);
 export const storageSize = () => (localStorage.getItem(cacheKey) || '').length;
-export const syncInfo = () => ({ ...sync, hasConfig: Boolean(bundledConfig || group?.config) });
+export const syncInfo = () => ({ ...sync, pending: outbox.length, hasConfig: Boolean(bundledConfig || group?.config) });
+export const clearDropped = () => { sync = { ...sync, dropped: 0 }; notify(); };
 
 function requireSession() {
   if (!view.session) throw new Error('Nenhuma jogatina em andamento');
@@ -241,6 +331,15 @@ export function buyTerms(settings = view.settings) {
 }
 
 // ---------- Jogatina ----------
+/** Chave sem acento e sem maiúscula: "Titã", "tita" e "TITA" viram a mesma pessoa. */
+export const nameKey = (name) => String(name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+/** Usa a grafia já conhecida do jogador (frequentes, mesa ou histórico), se existir. */
+export function canonicalName(raw) {
+  const name = String(raw || '').trim().replace(/\s+/g, ' ');
+  return knownPlayers().find((n) => nameKey(n) === nameKey(name)) || name;
+}
+
 function normName(raw) {
   const name = String(raw || '').trim().replace(/\s+/g, ' ');
   if (!name) throw new Error('Informe o nome do jogador');
@@ -248,13 +347,14 @@ function normName(raw) {
 }
 
 function newPlayer(rawName, players) {
-  const name = normName(rawName);
-  if (players.some((p) => p.name.toLowerCase() === name.toLowerCase())) throw new Error(`"${name}" já está na mesa`);
+  const name = canonicalName(normName(rawName));
+  if (players.some((p) => nameKey(p.name) === nameKey(name))) throw new Error(`"${name}" já está na mesa`);
   return { id: uid(), name, joinedAt: Date.now() };
 }
 
-export function startSession(names = []) {
+export async function startSession(names = []) {
   if (view.session) throw new Error('Já existe uma jogatina em andamento');
+  const online = await requireServer();
   const players = [];
   const ledger = [];
   for (const n of names) {
@@ -269,6 +369,15 @@ export function startSession(names = []) {
     players: Object.fromEntries(players.map((p) => [p.id, p])),
     ledger: Object.fromEntries(ledger.map((e) => [e.id, e])),
   };
+  if (online) {
+    // Só começa se não houver jogatina no servidor: um celular desatualizado nunca apaga a mesa.
+    const r = await remote.transaction('session', (cur) => (cur ? undefined : clean(session)));
+    if (!r.committed || r.value?.id !== session.id) throw new Error('Já existe uma jogatina em andamento, aberta em outro celular.');
+    tree.session = r.value;
+    saveLocal();
+    notify();
+    return;
+  }
   apply({ session });
 }
 
@@ -510,8 +619,9 @@ export function setConfirmed(playerId, ok) {
 
 export const settlement = (counts) => computeSettlement(requireSession(), view.settings, counts);
 
-export function closeSession() {
+export async function closeSession() {
   const session = requireSession();
+  const online = await requireServer();
   if (pendingBuys().length) throw new Error('Há buys aguardando aprovação do admin');
   const result = settlement(session.draft.counts);
   if (result.diff !== 0) throw new Error('A contagem de fichas não bate com o total em jogo');
@@ -529,23 +639,158 @@ export function closeSession() {
     result,
     settingsAtClose: { ...view.settings, adminPin: null, regulars: null, pix: null },
   };
+  if (online) {
+    // Confere no servidor que a mesa é a mesma da tela (buys, aprovações, saídas e contagens).
+    const fp = fingerprint(raw);
+    const r = await remote.transaction('session', (cur) => {
+      if (cur === null) return null;
+      return cur.id === session.id && fingerprint(cur) === fp ? cur : undefined;
+    });
+    if (!r.committed || !r.value || fingerprint(r.value) !== fp) {
+      throw new Error('A mesa mudou em outro celular (buy, aprovação ou contagem). Confira os números e encerre de novo.');
+    }
+    const data = clean({ [`history/${session.id}`]: closed, session: null });
+    await remote.update(data);
+    for (const [path, value] of Object.entries(data)) setPath(tree, path, value);
+    saveLocal();
+    notify();
+    return session.id;
+  }
   apply({ [`history/${session.id}`]: closed, session: null });
   return session.id;
 }
 
-export function cancelSession() {
+export async function cancelSession() {
   const id = view.session?.id;
-  apply({ session: null, ...(id ? { [`signatures/${id}`]: null } : {}) });
+  if (!id) return;
+  if (await requireServer()) {
+    const r = await remote.transaction('session', (cur) => (cur === null ? null : cur.id === id ? null : undefined));
+    if (!r.committed) throw new Error('A jogatina no servidor é outra. Recarregue o app e confira.');
+    tree.session = null;
+    saveLocal();
+    notify();
+    apply({ [`signatures/${id}`]: null });
+    return;
+  }
+  apply({ session: null, [`signatures/${id}`]: null });
 }
 
 export const getHistorySession = (id) => view.history.find((s) => s.id === id);
 
+/** Apagar manda para a lixeira: dá para restaurar até alguém esvaziar a lixeira. */
 export function deleteHistorySession(id) {
-  apply({ [`history/${id}`]: null, [`signatures/${id}`]: null });
+  apply({ [`history/${id}/deletedAt`]: Date.now() });
+}
+
+export function restoreHistorySession(id) {
+  apply({ [`history/${id}/deletedAt`]: null });
 }
 
 export function clearHistory() {
-  apply({ history: null, signatures: null });
+  const now = Date.now();
+  apply(Object.fromEntries(view.history.map((s) => [`history/${s.id}/deletedAt`, now])));
+}
+
+/** Exclusão definitiva (só a partir da lixeira). */
+export function purgeHistorySession(id) {
+  apply({ [`history/${id}`]: null, [`signatures/${id}`]: null });
+}
+
+export function emptyTrash() {
+  const updates = {};
+  for (const s of view.trash) {
+    updates[`history/${s.id}`] = null;
+    updates[`signatures/${s.id}`] = null;
+  }
+  if (Object.keys(updates).length) apply(updates);
+}
+
+// ---------- Acerto depois do fechamento (quem já pagou / recebeu) ----------
+/** Quem paga e quem recebe no acerto pelo caixa, por jogador. */
+export function settlementItems(s) {
+  const upfront = s.settingsAtClose?.paymentMode === 'caixa';
+  const items = [];
+  for (const r of s.result.rows) {
+    if (!upfront && r.net < 0) items.push({ playerId: r.playerId, name: r.name, kind: 'pagar', amount: -r.net });
+    const receive = upfront ? r.payout : r.net;
+    if (receive > 0) items.push({ playerId: r.playerId, name: r.name, kind: 'receber', amount: receive });
+  }
+  return items.map((x) => ({ ...x, settledAt: s.settled?.[x.playerId] || null }));
+}
+
+export function setSettled(sessionId, playerId, done) {
+  apply({ [`history/${sessionId}/settled/${playerId}`]: done ? Date.now() : null });
+}
+
+export function settleAll(sessionId) {
+  const s = getHistorySession(sessionId);
+  if (!s) return;
+  const now = Date.now();
+  const updates = {};
+  for (const x of settlementItems(s)) if (!x.settledAt) updates[`history/${sessionId}/settled/${x.playerId}`] = now;
+  if (Object.keys(updates).length) apply(updates);
+}
+
+/** Acertos de noites anteriores que ainda não foram marcados como feitos. */
+export function openSettlements() {
+  return view.history.flatMap((s) => settlementItems(s).filter((x) => !x.settledAt).map((x) => ({ ...x, sessionId: s.id, startedAt: s.startedAt })));
+}
+
+// ---------- Juntar jogadores com nomes diferentes ----------
+export function mergePreview(from, to) {
+  const a = nameKey(from);
+  const b = nameKey(to);
+  let sessions = 0;
+  const conflicts = [];
+  for (const s of [...view.history, ...view.trash]) {
+    const names = s.players.map((p) => nameKey(p.name));
+    if (names.includes(a)) sessions += 1;
+    if (names.includes(a) && names.includes(b)) conflicts.push(s.startedAt);
+  }
+  const inSession = view.session?.players.some((p) => nameKey(p.name) === a) && view.session?.players.some((p) => nameKey(p.name) === b);
+  return { sessions, conflicts, inSession: Boolean(inSession) };
+}
+
+/** Troca o nome `from` por `to` em todo o histórico, na mesa, nos frequentes e no Pix. */
+export function mergePlayers(from, to) {
+  const a = nameKey(from);
+  const target = String(to).trim();
+  if (!a || !target || a === nameKey(target)) throw new Error('Escolha dois nomes diferentes');
+  const preview = mergePreview(from, target);
+  if (preview.conflicts.length || preview.inSession) throw new Error(`${from} e ${target} jogaram na mesma noite. Não dá para juntar.`);
+  const updates = {};
+  for (const [id, s] of Object.entries(tree.history || {})) {
+    for (const [pid, p] of Object.entries(s.players || {})) {
+      if (nameKey(p.name) === a) updates[`history/${id}/players/${pid}/name`] = target;
+    }
+    (s.result?.rows || []).forEach((r, i) => {
+      if (nameKey(r.name) === a) updates[`history/${id}/result/rows/${i}/name`] = target;
+    });
+    if ((s.result?.transfers || []).some((t) => nameKey(t.from) === a || nameKey(t.to) === a)) {
+      updates[`history/${id}/result/transfers`] = s.result.transfers.map((t) => ({
+        ...t,
+        from: nameKey(t.from) === a ? target : t.from,
+        to: nameKey(t.to) === a ? target : t.to,
+      }));
+    }
+  }
+  for (const [pid, p] of Object.entries(tree.session?.players || {})) {
+    if (nameKey(p.name) === a) updates[`session/players/${pid}/name`] = target;
+  }
+  const seen = new Set();
+  const regulars = (view.settings.regulars || [])
+    .map((n) => (nameKey(n) === a ? target : n))
+    .filter((n) => !seen.has(nameKey(n)) && seen.add(nameKey(n)));
+  const pix = { ...view.settings.pix };
+  const fromPix = pix[pixKey(from)];
+  if (fromPix && !pix[pixKey(target)]) pix[pixKey(target)] = fromPix;
+  delete pix[pixKey(from)];
+  if ((tree.settings?.version ?? 1) >= SETTINGS_VERSION) {
+    updates['settings/regulars'] = regulars;
+    updates['settings/pix'] = pix;
+  }
+  apply(updates);
+  return preview.sessions;
 }
 
 /** Frequentes (cadastrados no Admin) primeiro, depois quem mais jogou. */
@@ -611,7 +856,8 @@ export function inviteLink() {
 export const exportData = () =>
   JSON.stringify({ app: 'poker-night', version: 2, exportedAt: Date.now(), ...tree, settings: view.settings }, null, 2);
 
-export function importData(json) {
+export async function importData(json) {
+  await requireServer();
   const data = JSON.parse(json);
   if (data.app !== 'poker-night') throw new Error('Arquivo não é um backup do Poker das Uvas');
   if ((data.version ?? 1) < 2) {

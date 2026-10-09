@@ -23,7 +23,8 @@ Controle das noites de poker com os amigos: buys por jogador, pote sempre visív
    ```
 8. **Histórico → Partidas:** as partidas encerradas, agrupadas por mês, com o campeão de cada mês (ou quem está liderando o mês atual).
 9. **Histórico → Ranking:** ranking **geral** e de **cada mês**, com ganhos (soma das noites no positivo), perdas (soma das noites no negativo), saldo, jogos e vitórias. Botão para compartilhar no grupo.
-10. **Apagar partida:** dá para apagar uma partida específica (🗑 na lista ou *Apagar partida* no resultado; pede o PIN, se houver).
+10. **Acertos:** no resultado, cada pessoa tem um botão **Marcar pago / Marcar recebido**. Enquanto houver Pix pendente, aparece o aviso **💸 Acertos pendentes** na mesa e no Histórico.
+11. **Lixeira:** apagar uma partida manda para a **lixeira** (no fim do Histórico), de onde dá para restaurar. Só *Excluir de vez* ou *Esvaziar lixeira* apagam para sempre (pedem o PIN).
 
 **Admin (⚙︎):** nome do grupo, jogadores frequentes, caixa (nome, WhatsApp e chave Pix), chaves Pix dos jogadores, valor do buy, fichas por buy, rake (fichas por buy, % do pote ou fixo), forma de pagamento, PIN do admin, sincronização online e backup.
 
@@ -38,7 +39,12 @@ Controle das noites de poker com os amigos: buys por jogador, pote sempre visív
 
 Com a sincronização ligada, todos os celulares do grupo veem a mesma mesa em tempo real: qualquer um pode lançar buys, e a contagem do fechamento aparece para todos. O ponto no topo mostra o status (🟢 online · 🟠 sem conexão · ⚪ só neste aparelho).
 
-Cada buy é gravado como um registro separado, então dois celulares lançando ao mesmo tempo **nunca sobrescrevem** um ao outro. Sem internet, os lançamentos ficam na fila e sobem quando a conexão volta.
+Cada buy é gravado como um registro separado, então dois celulares lançando ao mesmo tempo **nunca sobrescrevem** um ao outro.
+
+- **Sem internet:** aparece uma faixa laranja **Sem conexão**. O que for lançado fica guardado no celular (mesmo se a página recarregar) e é enviado quando a internet voltar. Lançamentos de uma jogatina que já foi encerrada em outro celular não são reenviados, e o app avisa.
+- **Começar, encerrar e descartar** só funcionam online e são conferidos no servidor: um celular desatualizado não consegue apagar a mesa de outro nem encerrar com números diferentes dos do servidor.
+- **Tela ligada:** com jogatina aberta, o app pede para o celular não apagar a tela.
+- **Versão nova:** quando o app é atualizado, aparece **Saiu uma versão nova do app → Atualizar agora**.
 
 O Firebase do grupo (`poker-night-aeed6`) já está configurado em [`js/firebase-config.js`](js/firebase-config.js). Para começar: no celular do caixa, **Admin → Criar grupo online → Compartilhar link do grupo**.
 
@@ -88,10 +94,19 @@ O Firebase do grupo (`poker-night-aeed6`) já está configurado em [`js/firebase
 
 ```bash
 npm start   # abre em http://localhost:5391
-npm test    # testes dos cálculos
+npm test    # testes dos cálculos e do fluxo da mesa
 ```
+
+### Publicar
+
+```bash
+npm test
+npm run release   # gera um número de versão novo (aviso de atualização nos celulares)
+git commit -am "…" && git push   # o GitHub Pages publica em ~1 minuto
+```
+
+Evite publicar no meio de uma jogatina.
 
 ### Próximos passos possíveis
 
-- Ranking/estatísticas acumuladas por jogador ao longo das noites.
 - Confirmação do buy por PIN pessoal de cada jogador, como alternativa à assinatura.
