@@ -440,3 +440,13 @@ details.card[open] > summary h2 { margin-bottom: 12px; }
 .trash-card .transfers li { flex-wrap: wrap; }
 .trash-card .trash-actions { width: 100%; justify-content: flex-start; }
 .form.merge { margin-bottom: 12px; }
+
+/* ---------- Correção de fichas ---------- */
+.correct-list li { justify-content: space-between; }
+.correct-list .field { width: 110px; flex: 0 0 110px; text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+.correct-list small.changed { font-weight: 700; }
+.corrections { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+.corrections h3 { margin: 0 0 6px; font-size: 0.9rem; }
+.corrections ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.corrections li { display: flex; flex-direction: column; gap: 2px; font-size: 0.88rem; }
+.card > .btn.small.ghost[data-action="correct-chips"] { margin-top: 10px; }

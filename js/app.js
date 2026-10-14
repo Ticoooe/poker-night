@@ -485,6 +485,11 @@ function viewResultado(id) {
         <thead><tr><th>Jogador</th><th>Buys</th><th class="hide-xs">Pagou</th><th class="hide-xs">Fichas</th><th>Recebe</th><th>Saldo</th></tr></thead>
         <tbody>${rows.map((x) => `<tr><td><strong>${esc(x.name)}</strong>${x.leftAt ? `<small class="sub">saiu ${hour(x.leftAt)}</small>` : ''}</td><td>${x.buys}</td><td class="hide-xs">${money(x.paid)}</td><td class="hide-xs">${num(x.chips)}</td><td>${money(x.payout)}</td><td class="${netClass(x.net)}"><strong>${signed(x.net)}</strong></td></tr>`).join('')}</tbody>
       </table></div>
+      <button class="btn small ghost" data-action="correct-chips" data-id="${s.id}">✎ Corrigir fichas</button>
+      ${s.corrections.length ? `<div class="corrections"><h3>Correções</h3><ul>${s.corrections.map((c) => `<li>
+        <small class="muted">${new Date(c.at).toLocaleDateString('pt-BR')} ${hour(c.at)} · ${esc(c.reason)}</small>
+        <span>${(c.changes || []).map((x) => `${esc(x.name)}: ${num(x.from)} → ${num(x.to)} fichas (${signed(x.netFrom)} → ${signed(x.netTo)})`).join(' · ')}</span>
+      </li>`).join('')}</ul></div>` : ''}
     </section>
     <section class="card caixa">
       <h2>Acerto com o caixa${settings.caixaName ? ` · ${esc(settings.caixaName)}` : ''}</h2>
@@ -518,6 +523,61 @@ function viewResultado(id) {
       <a class="btn ghost" href="#/historico">Histórico</a>
       <button class="btn danger" data-action="delete-session" data-id="${s.id}">Mandar para a lixeira</button>
     </div>`;
+}
+
+/** Corrige a contagem de fichas de uma partida já encerrada (total precisa continuar igual). */
+function openCorrection(sessionId) {
+  const s = S.getHistorySession(sessionId);
+  if (!s) return;
+  const rows = [...s.result.rows];
+  openModal(
+    `<header><h2>Corrigir fichas</h2><button class="icon-btn" data-close aria-label="Fechar">✕</button></header>
+     <p class="hint">${day(s.startedAt)} · total de <strong>${num(s.result.totals.chips)} fichas</strong>. Tire de um e ponha em outro: o total precisa continuar igual.</p>
+     <ul class="entries correct-list">${rows.map((r) => `<li>
+        <div><strong>${esc(r.name)}</strong><small data-c-net="${r.playerId}">${signed(r.net)}</small></div>
+        <input class="field" data-c="${r.playerId}" inputmode="numeric" pattern="[0-9]*" value="${r.chips}" aria-label="Fichas de ${esc(r.name)}" />
+      </li>`).join('')}</ul>
+     <p class="status" data-c-status></p>
+     <label class="count"><span>Motivo</span><input class="field" data-c-reason maxlength="100" placeholder="Ex.: Tico saiu com 150 fichas a mais" /></label>
+     <footer><button type="button" class="btn ghost" data-close>Cancelar</button>
+       <button type="button" class="btn primary" data-c-go disabled>Salvar correção</button></footer>`,
+    (root) => {
+      const read = () => Object.fromEntries([...root.querySelectorAll('[data-c]')].map((i) => [i.dataset.c, i.value === '' ? NaN : parseInt(i.value, 10)]));
+      const before = Object.fromEntries(rows.map((r) => [r.playerId, r]));
+      const update = () => {
+        root.querySelectorAll('[data-c]').forEach((i) => { i.value = i.value.replace(/\D/g, ''); });
+        const counts = read();
+        const valid = Object.values(counts).every((n) => Number.isInteger(n));
+        const status = root.querySelector('[data-c-status]');
+        let ok = false;
+        if (!valid) status.textContent = 'Preencha as fichas de todos.';
+        else {
+          const { result, diff } = S.previewCorrection(sessionId, counts);
+          for (const r of result.rows) {
+            const el = root.querySelector(`[data-c-net="${r.playerId}"]`);
+            const changed = r.net !== before[r.playerId].net;
+            el.textContent = changed ? `${signed(before[r.playerId].net)} → ${signed(r.net)}` : signed(r.net);
+            el.className = changed ? `changed ${netClass(r.net)}` : '';
+          }
+          const changedAny = result.rows.some((r) => r.chips !== before[r.playerId].chips);
+          if (diff) status.innerHTML = `⚠️ ${diff > 0 ? 'Sobrando' : 'Faltando'} <strong>${num(Math.abs(diff))}</strong> fichas. O total precisa continuar ${num(result.totals.chips)}.`;
+          else if (!changedAny) status.textContent = 'Nenhuma contagem mudou ainda.';
+          else status.innerHTML = '✅ Total confere. Os acertos de Pix de quem mudou voltam a ficar pendentes.';
+          ok = !diff && changedAny;
+        }
+        root.querySelector('[data-c-go]').disabled = !ok || !root.querySelector('[data-c-reason]').value.trim();
+      };
+      root.addEventListener('input', update);
+      root.querySelector('[data-c-go]').addEventListener('click', async () => {
+        const counts = read();
+        const reason = root.querySelector('[data-c-reason]').value;
+        if (!(await requireAdmin('corrigir fichas'))) return;
+        const changes = attempt(() => S.correctChips(sessionId, counts, reason));
+        if (changes) toast(`Correção salva: ${changes.map((c) => c.name).join(' e ')}`);
+      });
+      update();
+    },
+  );
 }
 
 function shareText(s) {
@@ -1263,6 +1323,7 @@ app.addEventListener('click', async (e) => {
       return;
     }
     case 'audit': return openAudit(id);
+    case 'correct-chips': return openCorrection(id);
     case 'approve-request': {
       if (!(await requireAdmin('aprovar buys'))) return;
       const n = S.approveRequest(id);

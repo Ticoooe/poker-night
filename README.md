@@ -24,7 +24,8 @@ Controle das noites de poker com os amigos: buys por jogador, pote sempre visív
 8. **Histórico → Partidas:** as partidas encerradas, agrupadas por mês, com o campeão de cada mês (ou quem está liderando o mês atual).
 9. **Histórico → Ranking:** ranking **geral** e de **cada mês**, com ganhos (soma das noites no positivo), perdas (soma das noites no negativo), saldo, jogos e vitórias. Botão para compartilhar no grupo.
 10. **Acertos:** no resultado, cada pessoa tem um botão **Marcar pago / Marcar recebido**. Enquanto houver Pix pendente, aparece o aviso **💸 Acertos pendentes** na mesa e no Histórico.
-11. **Lixeira:** apagar uma partida manda para a **lixeira** (no fim do Histórico), de onde dá para restaurar. Só *Excluir de vez* ou *Esvaziar lixeira* apagam para sempre (pedem o PIN).
+11. **Corrigir fichas depois do jogo:** no resultado, **✎ Corrigir fichas** — tire de um e ponha em outro (o total precisa continuar igual), escreva o motivo e confirme com o PIN. O resultado é refeito, a correção fica registrada na partida e os acertos de Pix de quem mudou voltam a ficar pendentes.
+12. **Lixeira:** apagar uma partida manda para a **lixeira** (no fim do Histórico), de onde dá para restaurar. Só *Excluir de vez* ou *Esvaziar lixeira* apagam para sempre (pedem o PIN).
 
 **Admin (⚙︎):** nome do grupo, jogadores frequentes, caixa (nome, WhatsApp e chave Pix), chaves Pix dos jogadores, valor do buy, fichas por buy, rake (fichas por buy, % do pote ou fixo), forma de pagamento, PIN do admin, sincronização online e backup.
 

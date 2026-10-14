@@ -162,6 +162,7 @@ function derive(t) {
       const x = sessionOf(s);
       x.result = { ...x.result, rows: x.result?.rows || [], transfers: x.result?.transfers || [] };
       x.settled = { ...(s.settled || {}) };
+      x.corrections = Object.values(s.corrections || {}).sort((a, b) => a.at - b.at);
       return x;
     })
     .sort((a, b) => b.closedAt - a.closedAt);
@@ -703,6 +704,45 @@ export function emptyTrash() {
     updates[`signatures/${s.id}`] = null;
   }
   if (Object.keys(updates).length) apply(updates);
+}
+
+// ---------- Correção de fichas depois do fechamento ----------
+/**
+ * Refaz o resultado de uma partida encerrada com uma nova contagem de fichas.
+ * O total precisa continuar igual (nenhuma ficha aparece ou some) e a correção fica registrada.
+ */
+export function previewCorrection(sessionId, counts) {
+  const s = getHistorySession(sessionId);
+  if (!s) throw new Error('Partida não encontrada');
+  const result = computeSettlement(s, s.settingsAtClose || view.settings, counts);
+  return { result, diff: result.diff, total: result.totals.chips };
+}
+
+export function correctChips(sessionId, counts, reason) {
+  const s = getHistorySession(sessionId);
+  if (!s) throw new Error('Partida não encontrada');
+  const why = String(reason || '').trim();
+  if (!why) throw new Error('Informe o motivo da correção');
+  for (const r of s.result.rows) {
+    const n = counts[r.playerId];
+    if (!Number.isInteger(n) || n < 0) throw new Error(`Fichas inválidas para ${r.name}`);
+  }
+  const { result, diff } = previewCorrection(sessionId, counts);
+  if (diff !== 0) throw new Error(`O total precisa continuar ${result.totals.chips} fichas (está ${diff > 0 ? 'sobrando' : 'faltando'} ${Math.abs(diff)})`);
+  const before = Object.fromEntries(s.result.rows.map((r) => [r.playerId, r]));
+  const changes = result.rows
+    .filter((r) => r.chips !== before[r.playerId].chips)
+    .map((r) => ({ playerId: r.playerId, name: r.name, from: before[r.playerId].chips, to: r.chips, netFrom: before[r.playerId].net, netTo: r.net }));
+  if (!changes.length) throw new Error('Nenhuma contagem mudou');
+  for (const r of result.rows) if (before[r.playerId].leftAt) r.leftAt = before[r.playerId].leftAt;
+  const updates = {
+    [`history/${sessionId}/result`]: result,
+    [`history/${sessionId}/corrections/${uid()}`]: { at: Date.now(), reason: why, changes },
+  };
+  // Quem teve o valor mudado precisa acertar de novo.
+  for (const c of changes) updates[`history/${sessionId}/settled/${c.playerId}`] = null;
+  apply(updates);
+  return changes;
 }
 
 // ---------- Acerto depois do fechamento (quem já pagou / recebeu) ----------

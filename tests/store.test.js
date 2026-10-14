@@ -121,3 +121,28 @@ test('juntar jogadores troca o nome no histórico e recusa quem jogou junto', as
   const names = S.getState().history[0].result.rows.map((r) => r.name).sort();
   assert.deepEqual(names, ['Felipin', 'Tico']);
 });
+
+test('corrigir fichas depois do fechamento refaz o resultado e mantém o total', async () => {
+  await S.startSession(['Tico', 'Marlon']);
+  const [tico, marlon] = ids();
+  S.addBuys(tico, 2);
+  S.addBuys(marlon, 2);
+  S.setCount(tico, 150);
+  S.setCount(marlon, 70);
+  const sid = await S.closeSession();
+  const items = S.settlementItems(S.getHistorySession(sid));
+  S.setSettled(sid, items[0].playerId, true);
+
+  assert.throws(() => S.correctChips(sid, { [tico]: 100, [marlon]: 70 }, 'erro'), /faltando 50/);
+  assert.throws(() => S.correctChips(sid, { [tico]: 100, [marlon]: 120 }, ''), /motivo/);
+  const changes = S.correctChips(sid, { [tico]: 100, [marlon]: 120 }, 'Tico contou 50 a mais');
+  assert.equal(changes.length, 2);
+
+  const s = S.getHistorySession(sid);
+  const byName = Object.fromEntries(s.result.rows.map((r) => [r.name, r]));
+  assert.equal(byName.Tico.payout, 5000); // 100 fichas × R$ 0,50
+  assert.equal(byName.Marlon.payout, 6000);
+  assert.equal(s.result.rows.reduce((a, r) => a + r.net, 0) + s.result.totals.rake, 0);
+  assert.equal(s.corrections.length, 1);
+  assert.equal(Object.keys(s.settled).length, 0); // acertos dos dois precisam ser refeitos
+});
