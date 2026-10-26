@@ -588,6 +588,25 @@ export function cashOut(playerId, chips) {
   });
 }
 
+/** Corrige as fichas de quem já saiu (ex.: no fechamento perceberam que a contagem estava errada). */
+export function editCashOut(playerId, chips) {
+  requireSession();
+  const p = getPlayer(playerId);
+  if (!p?.cashout) throw new Error('Esse jogador não encerrou o jogo');
+  const n = Number(chips);
+  if (!Number.isInteger(n) || n < 0) throw new Error('Informe a quantidade de fichas');
+  if (n === p.cashout.chips) return false;
+  const { maxChips } = previewCashOut(playerId, n);
+  if (n > maxChips) throw new Error(`Não pode passar de ${maxChips} fichas (total ainda em jogo)`);
+  apply({
+    [`session/players/${playerId}/cashout/chips`]: n,
+    [`session/players/${playerId}/cashout/editedAt`]: Date.now(),
+    [`session/draft/counts/${playerId}`]: n,
+    ...ledgerPath(entry('cashout_edit', { playerId, from: p.cashout.chips, chips: n })),
+  });
+  return true;
+}
+
 /** Volta o jogador para a mesa (ex.: saída registrada por engano). */
 export function undoCashOut(playerId) {
   requireSession();

@@ -146,3 +146,20 @@ test('corrigir fichas depois do fechamento refaz o resultado e mantém o total',
   assert.equal(s.corrections.length, 1);
   assert.equal(Object.keys(s.settled).length, 0); // acertos dos dois precisam ser refeitos
 });
+
+test('fichas de quem já saiu podem ser corrigidas antes do fechamento', async () => {
+  await S.startSession(['Tico', 'Ian']);
+  const [tico, ian] = ids();
+  S.addBuys(tico, 1);
+  S.addBuys(ian, 1);
+  S.cashOut(ian, 30);
+  assert.throws(() => S.setCount(ian, 40), /travada/);
+  assert.throws(() => S.editCashOut(ian, 200), /Não pode passar/);
+  assert.equal(S.editCashOut(ian, 45), true);
+  assert.equal(S.getPlayer(ian).cashout.chips, 45);
+  assert.equal(S.getState().session.draft.counts[ian], 45);
+  S.setCount(tico, 65);
+  const sid = await S.closeSession();
+  const row = S.getHistorySession(sid).result.rows.find((r) => r.name === 'Ian');
+  assert.equal(row.chips, 45);
+});

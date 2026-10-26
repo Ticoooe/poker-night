@@ -354,6 +354,7 @@ function viewFechar() {
             <span><strong>${esc(p.name)}</strong><small>${out ? `🏁 Saiu às ${hour(out.at)} · ` : ''}${plural(st.buys, 'buy', 'buys')} · pagou ${money(st.paid)}</small></span></div>
           <label class="count"><span>Fichas${out ? ' 🔒' : ''}</span>
             <input class="field" data-count="${p.id}" inputmode="numeric" pattern="[0-9]*" placeholder="—" value="${c ?? ''}" ${out ? 'readonly' : ''} />
+            ${out ? `<button type="button" class="link edit-out" data-action="edit-cashout" data-id="${p.id}">✎ Editar</button>` : ''}
           </label>
           <div class="close-result"><small>Recebe</small><strong data-payout>—</strong><small data-net></small></div>
           ${settings.requireConfirmAtClose ? `<label class="confirm"><input type="checkbox" data-confirm="${p.id}" ${draft.confirmed[p.id] ? 'checked' : ''} ${out ? 'disabled' : ''}/> Conferido</label>` : ''}
@@ -1324,6 +1325,23 @@ app.addEventListener('click', async (e) => {
     }
     case 'audit': return openAudit(id);
     case 'correct-chips': return openCorrection(id);
+    case 'edit-cashout': {
+      const p = S.getPlayer(id);
+      if (!p?.cashout) return;
+      if (!(await requireAdmin('editar as fichas de quem já saiu'))) return;
+      const v = await ask({
+        title: `Fichas de ${p.name}`,
+        body: `${esc(p.name)} saiu às ${hour(p.cashout.at)} com <strong>${num(p.cashout.chips)} fichas</strong>. Corrija se a contagem estava errada; ele continua como “já saiu”.`,
+        input: `inputmode="numeric" pattern="[0-9]*" value="${p.cashout.chips}"`,
+        confirmText: 'Salvar',
+        validate: (x) => (/^\d+$/.test(x) ? null : 'Digite só números'),
+      });
+      if (v === null) return;
+      const from = p.cashout.chips;
+      const changed = attempt(() => S.editCashOut(id, parseInt(v, 10)));
+      if (changed) toast(`${p.name}: ${num(from)} → ${num(parseInt(v, 10))} fichas`);
+      return;
+    }
     case 'approve-request': {
       if (!(await requireAdmin('aprovar buys'))) return;
       const n = S.approveRequest(id);

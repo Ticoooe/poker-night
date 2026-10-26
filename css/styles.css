@@ -450,3 +450,4 @@ details.card[open] > summary h2 { margin-bottom: 12px; }
 .corrections ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .corrections li { display: flex; flex-direction: column; gap: 2px; font-size: 0.88rem; }
 .card > .btn.small.ghost[data-action="correct-chips"] { margin-top: 10px; }
+.edit-out { align-self: flex-end; font-size: 0.8rem; text-transform: none; padding: 2px 0; color: var(--gold); }
