@@ -86,21 +86,47 @@ export function computeTransfers(parts) {
   return out;
 }
 
-/** Fechamento completo da jogatina a partir da contagem de fichas. */
-export function computeSettlement(session, settings, counts) {
+/**
+ * Fechamento completo da jogatina a partir da contagem de fichas.
+ *
+ * Se a contagem não bate com as fichas vendidas (quebra), `adjust` diz quem absorve a diferença:
+ * - 'proporcional': o prêmio é dividido pelas fichas contadas (todos ganham/perdem um pouco);
+ * - 'casa': cada ficha vale o mesmo de sempre e a casa/caixa cobre a diferença (rake muda);
+ * - 'jogador': cada ficha vale o mesmo e um jogador (adjust.playerId) cobre a diferença.
+ * Em todos os casos: soma dos saldos + rake + ajuste da casa = 0 (nenhum centavo some).
+ */
+export function computeSettlement(session, settings, counts, adjust = null) {
   const totals = computeTotals(session.ledger, settings);
   const items = session.players.map((p) => ({ id: p.id, chips: counts[p.id] ?? 0 }));
   const counted = sum(items, (i) => i.chips);
-  const payouts = distribute(items, totals.chips, totals.prize);
+  const diff = counted - totals.chips;
+  let payouts;
+  let adjustment = null;
+  if (!adjust || diff === 0) {
+    payouts = distribute(items, totals.chips, totals.prize);
+  } else if (adjust.mode === 'proporcional') {
+    payouts = distribute(items, counted, totals.prize);
+    adjustment = { mode: 'proporcional', diff, house: 0 };
+  } else {
+    payouts = Object.fromEntries(items.map((i) => [i.id, totals.chips ? Math.round((i.chips * totals.prize) / totals.chips) : 0]));
+    const rest = totals.prize - sum(Object.values(payouts));
+    if (adjust.mode === 'jogador' && payouts[adjust.playerId] !== undefined) {
+      payouts[adjust.playerId] += rest;
+      adjustment = { mode: 'jogador', diff, house: 0, playerId: adjust.playerId, amount: -rest };
+    } else {
+      adjustment = { mode: 'casa', diff, house: rest };
+    }
+  }
   const rows = session.players.map((p) => {
     const buys = activeBuys(session.ledger, p.id);
     const paid = sum(buys, (b) => b.value);
     const payout = payouts[p.id];
     return { playerId: p.id, name: p.name, buys: buys.length, paid, chips: counts[p.id] ?? 0, payout, net: payout - paid };
   });
+  const house = totals.rake + (adjustment?.house || 0);
   const parts = rows.map((r) => ({ name: r.name, net: r.net }));
-  if (totals.rake > 0) parts.push({ name: 'Casa (rake)', net: totals.rake });
-  return { totals, counted, diff: counted - totals.chips, rows, transfers: computeTransfers(parts) };
+  if (house !== 0) parts.push({ name: 'Casa (rake)', net: house });
+  return { totals, counted, diff, rows, transfers: computeTransfers(parts), adjustment, house };
 }
 
 /**
