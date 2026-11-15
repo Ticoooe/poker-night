@@ -163,3 +163,65 @@ test('fichas de quem já saiu podem ser corrigidas antes do fechamento', async (
   const row = S.getHistorySession(sid).result.rows.find((r) => r.name === 'Ian');
   assert.equal(row.chips, 45);
 });
+
+test('quebra: só encerra com diferença se escolher quem absorve e der o motivo', async () => {
+  S.updateSettings({ requireApproval: false });
+  await S.startSession(['Ana', 'Bia']);
+  const [a, b] = ids();
+  S.addBuys(a, 1);
+  S.addBuys(b, 1);
+  S.setCount(a, 60);
+  S.setCount(b, 45); // 105 de 110: faltam 5
+  await assert.rejects(S.closeSession(), /não bate/);
+  await assert.rejects(S.closeSession({ mode: 'casa' }), /motivo/);
+  const sid = await S.closeSession({ mode: 'casa', reason: 'ficha caiu no chão' });
+  const s = S.getHistorySession(sid);
+  assert.equal(s.result.adjustment.mode, 'casa');
+  assert.equal(s.result.adjustment.reason, 'ficha caiu no chão');
+  assert.equal(s.result.rows.reduce((t, r) => t + r.net, 0) + s.result.house, 0);
+  // correção depois do fechamento mantém o total contado (105) e o modo da quebra
+  const counts = Object.fromEntries(s.result.rows.map((r) => [r.playerId, r.chips]));
+  counts[a] = 50;
+  counts[b] = 55;
+  assert.equal(S.correctChips(sid, counts, 'trocaram a contagem').length, 2);
+});
+
+test('pagamento parcial deixa o resto pendente e o resumo do caixa confere', () => {
+  const s = S.getState().history[0];
+  const item = S.settlementItems(s).find((x) => x.kind === 'pagar');
+  S.setPartial(s.id, item.playerId, 100);
+  const after = S.settlementItems(S.getHistorySession(s.id)).find((x) => x.playerId === item.playerId);
+  assert.equal(after.paid, 100);
+  assert.equal(after.remaining, item.amount - 100);
+  assert.equal(after.settledAt, null);
+  assert.throws(() => S.setPartial(s.id, item.playerId, item.amount + 1), /não pode passar/);
+  S.settleAll(s.id);
+  const bal = S.caixaBalance(S.getHistorySession(s.id));
+  assert.equal(bal.missing, 0);
+  assert.equal(bal.owed, 0);
+  assert.equal(bal.inHand, bal.expected);
+});
+
+test('admin lança buy sem assinatura (já aprovado) e partida pode ser reaberta', async () => {
+  S.updateSettings({ requireSignature: true, requireApproval: true });
+  await S.startSession(['Ana', 'Bia']);
+  const [a, b] = ids();
+  assert.throws(() => S.addBuys(a, 1), /Assinatura/);
+  assert.throws(() => S.addBuys(a, 1, [], { admin: true }), /motivo/);
+  S.addBuys(a, 2, [], { admin: true, reason: 'esqueceram de lançar' });
+  assert.equal(S.playerStats(a).buys, 2);
+  assert.equal(S.pendingBuys().length, 0);
+  S.addBuys(b, 1, [], { admin: true, reason: 'x' });
+  S.setCount(a, 110);
+  S.setCount(b, 55);
+  const sid = await S.closeSession();
+  await S.reopenSession(sid, 'faltou um buy');
+  assert.equal(S.getState().session.id, sid);
+  assert.equal(S.getHistorySession(sid), undefined);
+  assert.equal(S.getState().session.draft.counts[a], 110);
+  S.addBuys(b, 1, [], { admin: true, reason: 'faltou' });
+  S.setCount(b, 110);
+  await S.closeSession();
+  assert.equal(S.getHistorySession(sid).result.totals.count, 4);
+  S.updateSettings({ requireSignature: false });
+});

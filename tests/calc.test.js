@@ -85,3 +85,29 @@ test('buy aguardando aprovação não entra no pote até ser aprovado', () => {
   delete ledger[1].pending;
   assert.equal(computeTotals(ledger, base).pot, 10000);
 });
+
+test('quebra: fechar com fichas faltando, cada forma de absorver fecha a conta', () => {
+  const session = {
+    players: [{ id: 'a', name: 'Ana' }, { id: 'b', name: 'Bia' }, { id: 'c', name: 'Caio' }],
+    ledger: [buy('a', 3000, 55, { rake: 250 }), buy('b', 3000, 55, { rake: 250 }), buy('c', 3000, 55, { rake: 250 })],
+  };
+  const s = { rakeMode: 'perBuy', rakeValue: 5 };
+  const counts = { a: 100, b: 50, c: 10 }; // 160 de 165: faltam 5 fichas (R$ 2,50)
+  const check = (r) => {
+    assert.equal(r.diff, -5);
+    assert.equal(r.rows.reduce((t, x) => t + x.net, 0) + r.house, 0);
+  };
+  const prop = computeSettlement(session, s, counts, { mode: 'proporcional' });
+  check(prop);
+  assert.equal(prop.rows.reduce((t, x) => t + x.payout, 0), prop.totals.prize);
+
+  const casa = computeSettlement(session, s, counts, { mode: 'casa' });
+  check(casa);
+  assert.equal(casa.rows.find((x) => x.name === 'Ana').payout, 5000); // ficha mantém R$ 0,50
+  assert.equal(casa.adjustment.house, 250); // casa fica com as 5 fichas que sumiram
+
+  const jog = computeSettlement(session, s, counts, { mode: 'jogador', playerId: 'c' });
+  check(jog);
+  assert.equal(jog.rows.find((x) => x.name === 'Caio').payout, 500 + 250);
+  assert.equal(jog.house, 750);
+});

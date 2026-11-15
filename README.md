@@ -11,7 +11,7 @@ Controle das noites de poker com os amigos: buys por jogador, pote sempre visív
 3. **Aprovação do admin:** o buy fica **⏳ aguardando aprovação** e só entra no pote depois que o admin aprova (vendo a assinatura). O pedido aparece em destaque na mesa e no Admin, em todos os celulares — com todas as assinaturas juntas e os botões **Aprovar N buys** / **Recusar tudo**. No **aparelho do admin** (Admin → *Usar este aparelho como admin*) chega um aviso com vibração a cada pedido novo, e aprovar/recusar não pede PIN; em outro aparelho, aprovar pede o PIN. Buy lançado no próprio aparelho do admin já sai aprovado ("Confirmar e aprovar"). Recusados ficam no registro com o motivo. Não dá para fechar a jogatina com pedido pendente. Dá para desligar em Admin → Conferência.
 4. Errou? Um toque em **Desfazer** logo após o registro, ou toque no nome do jogador → *Anular* (pede motivo e, se configurado, PIN).
 5. **Alguém vai embora antes?** Toque no nome dele → **🏁 Encerrar jogo de Fulano**. Conte as fichas dele, o app mostra na hora quanto ele recebe e o saldo; ele confere e o admin confirma. A contagem fica **travada** (não dá para lançar mais buys nem mudar as fichas dele) e entra sozinha no fechamento. Na mesa ele aparece em **Já saíram**, e o botão **Avisar o caixa** manda no WhatsApp o "A pagar / A receber" só dele. Errou? *Desfazer saída* (pede o PIN), ou, no fechamento, **✎ Editar** na linha dele para corrigir só as fichas (pede o PIN; ele continua como "já saiu" e a mudança fica no registro).
-6. **Finalizar jogatina:** conte as fichas de cada um, digite, e o jogador marca *Conferido*. Só dá para encerrar quando **a soma bate exatamente** com as fichas em jogo.
+6. **Finalizar jogatina:** conte as fichas de cada um, digite, e o jogador marca *Conferido*. O normal é a soma bater exatamente com as fichas em jogo. **Se não bater (quebra)** e ninguém achar o erro, use **Encerrar com diferença** (PIN): escolha quem absorve — o **caixa**, **todos** (proporcional) ou **um jogador** — e escreva o motivo. A tela mostra o saldo de cada um antes de confirmar, e a quebra fica registrada no resultado e na mensagem do caixa.
 7. **Resultado:** quanto cada um recebe e o saldo. O botão **Enviar para o caixa (WhatsApp)** abre a conversa com o caixa já com a mensagem pronta:
    ```
    A pagar:
@@ -23,9 +23,13 @@ Controle das noites de poker com os amigos: buys por jogador, pote sempre visív
    ```
 8. **Histórico → Partidas:** as partidas encerradas, agrupadas por mês, com o campeão de cada mês (ou quem está liderando o mês atual).
 9. **Histórico → Ranking:** ranking **geral** e de **cada mês**, com ganhos (soma das noites no positivo), perdas (soma das noites no negativo), saldo, jogos e vitórias. Botão para compartilhar no grupo.
-10. **Acertos:** no resultado, cada pessoa tem um botão **Marcar pago / Marcar recebido**. Enquanto houver Pix pendente, aparece o aviso **💸 Acertos pendentes** na mesa e no Histórico.
+10. **Acertos:** no resultado, cada pessoa tem um botão **Marcar pago / Marcar recebido**, com opção de **só uma parte** (o resto fica pendente). O quadro do caixa mostra quanto **entrou**, quanto **saiu** e quanto deve **ficar com o caixa**. Enquanto houver Pix pendente, aparece o aviso **💸 Acertos pendentes** na mesa e no Histórico.
 11. **Corrigir fichas depois do jogo:** no resultado, **✎ Corrigir fichas** — tire de um e ponha em outro (o total precisa continuar igual), escreva o motivo e confirme com o PIN. O resultado é refeito, a correção fica registrada na partida e os acertos de Pix de quem mudou voltam a ficar pendentes.
-12. **Lixeira:** apagar uma partida manda para a **lixeira** (no fim do Histórico), de onde dá para restaurar. Só *Excluir de vez* ou *Esvaziar lixeira* apagam para sempre (pedem o PIN).
+12. **Reabrir partida:** no resultado, **↩︎ Reabrir partida** (PIN) devolve a partida para a mesa com as contagens do fechamento, para lançar o que faltou e encerrar de novo.
+13. **Buy pelo admin:** na ficha do jogador, **＋ Buy pelo admin** lança buy esquecido ou sem assinatura, já aprovado e marcado no registro.
+14. **Registro da mesa:** na mesa, **Registro → Ver tudo** mostra tudo o que aconteceu (buys, aprovações, anulações, saídas, correções).
+15. **O que fazer se… (?)**: a página de ajuda lista cada problema comum e a saída no app.
+16. **Lixeira:** apagar uma partida manda para a **lixeira** (no fim do Histórico), de onde dá para restaurar. Só *Excluir de vez* ou *Esvaziar lixeira* apagam para sempre (pedem o PIN).
 
 **Admin (⚙︎):** nome do grupo, jogadores frequentes, caixa (nome, WhatsApp e chave Pix), chaves Pix dos jogadores, valor do buy, fichas por buy, rake (fichas por buy, % do pote ou fixo), forma de pagamento, PIN do admin, sincronização online e backup.
 

@@ -419,16 +419,17 @@ export const MAX_BUYS_PER_REQUEST = 10;
  * Registra `count` buys de uma vez (um pedido). Cada buy tem a própria assinatura
  * (`signatures[i]`) e todos compartilham o mesmo `requestId`, para o admin aprovar juntos.
  */
-export function addBuys(playerId, count = 1, signatures = []) {
+export function addBuys(playerId, count = 1, signatures = [], { admin = false, reason = '' } = {}) {
   const session = requireSession();
   if (!getPlayer(playerId)) throw new Error('Jogador não encontrado');
   if (getPlayer(playerId).cashout) throw new Error(`${getPlayer(playerId).name} já encerrou o jogo`);
   const n = Math.max(1, Math.min(MAX_BUYS_PER_REQUEST, Math.round(count)));
-  if (view.settings.requireSignature && (signatures.length < n || signatures.some((x) => !x))) {
+  if (admin && !String(reason).trim()) throw new Error('Informe o motivo do lançamento pelo admin');
+  if (!admin && view.settings.requireSignature && (signatures.length < n || signatures.some((x) => !x))) {
     throw new Error('Assinatura obrigatória em cada buy');
   }
   const t = buyTerms();
-  const pending = Boolean(view.settings.requireApproval);
+  const pending = !admin && Boolean(view.settings.requireApproval);
   const requestId = uid();
   const now = Date.now();
   const first = activeBuys(session.ledger, playerId).length + 1;
@@ -440,6 +441,7 @@ export function addBuys(playerId, count = 1, signatures = []) {
       id: uid(), type: 'buy', at: now + i, playerId, requestId,
       value: t.value, chips: t.chips, rake: t.rake, rakeChips: t.rakeChips, signed: Boolean(sig),
       ...(pending ? { pending: true } : {}),
+      ...(admin ? { byAdmin: String(reason).trim(), approvedAt: now } : {}),
     };
     updates[`session/ledger/${e.id}`] = e;
     if (sig) updates[`signatures/${session.id}/${e.id}`] = sig;
@@ -638,13 +640,29 @@ export function setConfirmed(playerId, ok) {
 }
 
 export const settlement = (counts) => computeSettlement(requireSession(), view.settings, counts);
+export const settlementWith = (counts, adjust) => computeSettlement(requireSession(), view.settings, counts, adjust);
 
-export async function closeSession() {
+/**
+ * Encerra a jogatina. Se a contagem não bate, só fecha com `adjust` (quem absorve a quebra)
+ * e um motivo, que ficam registrados no resultado.
+ */
+export async function closeSession(adjust = null) {
   const session = requireSession();
   const online = await requireServer();
   if (pendingBuys().length) throw new Error('Há buys aguardando aprovação do admin');
-  const result = settlement(session.draft.counts);
-  if (result.diff !== 0) throw new Error('A contagem de fichas não bate com o total em jogo');
+  const missing = session.players.filter((p) => session.draft.counts[p.id] == null);
+  if (missing.length) throw new Error(`Falta contar as fichas de ${missing.map((p) => p.name).join(', ')}`);
+  let result = settlement(session.draft.counts);
+  if (result.diff !== 0) {
+    if (!adjust) throw new Error('A contagem de fichas não bate com o total em jogo');
+    const why = String(adjust.reason || '').trim();
+    if (!why) throw new Error('Informe o motivo da diferença');
+    if (adjust.mode === 'proporcional' && result.counted === 0) throw new Error('Sem fichas contadas não dá para dividir entre todos');
+    if (adjust.mode === 'jogador' && !getPlayer(adjust.playerId)) throw new Error('Escolha o jogador');
+    result = computeSettlement(session, view.settings, session.draft.counts, adjust);
+    result.adjustment.reason = why;
+    result.adjustment.at = Date.now();
+  }
   for (const row of result.rows) {
     const out = getPlayer(row.playerId)?.cashout;
     if (out) row.leftAt = out.at;
@@ -697,6 +715,35 @@ export async function cancelSession() {
 
 export const getHistorySession = (id) => view.history.find((s) => s.id === id);
 
+/**
+ * Reabre uma partida encerrada (ex.: faltou lançar um buy). Ela volta para a mesa com as
+ * contagens do fechamento e sai do histórico até ser encerrada de novo.
+ */
+export async function reopenSession(id, reason) {
+  if (view.session) throw new Error('Já existe uma jogatina aberta. Encerre ou descarte antes de reabrir outra.');
+  const why = String(reason || '').trim();
+  if (!why) throw new Error('Informe o motivo');
+  const raw = tree.history?.[id];
+  if (!raw) throw new Error('Partida não encontrada');
+  const counts = Object.fromEntries((raw.result?.rows || []).map((r) => [r.playerId, r.chips]));
+  const reopen = entry('reopen', { reason: why, closedAt: raw.closedAt });
+  const session = clean({
+    id: raw.id,
+    startedAt: raw.startedAt,
+    players: raw.players,
+    ledger: { ...raw.ledger, [reopen.id]: reopen },
+    draft: { counts, confirmed: {} },
+  });
+  if (await requireServer()) {
+    const r = await remote.transaction('session', (cur) => (cur ? undefined : session));
+    if (!r.committed || r.value?.id !== id) throw new Error('Já existe uma jogatina aberta em outro celular.');
+    tree.session = r.value;
+    apply({ [`history/${id}`]: null });
+    return;
+  }
+  apply({ session, [`history/${id}`]: null });
+}
+
 /** Apagar manda para a lixeira: dá para restaurar até alguém esvaziar a lixeira. */
 export function deleteHistorySession(id) {
   apply({ [`history/${id}/deletedAt`]: Date.now() });
@@ -733,8 +780,12 @@ export function emptyTrash() {
 export function previewCorrection(sessionId, counts) {
   const s = getHistorySession(sessionId);
   if (!s) throw new Error('Partida não encontrada');
-  const result = computeSettlement(s, s.settingsAtClose || view.settings, counts);
-  return { result, diff: result.diff, total: result.totals.chips };
+  const adj = s.result.adjustment;
+  const result = computeSettlement(s, s.settingsAtClose || view.settings, counts, adj ? { mode: adj.mode, playerId: adj.playerId } : null);
+  if (adj && result.adjustment) Object.assign(result.adjustment, { reason: adj.reason, at: adj.at });
+  // Com quebra registrada, o total que precisa se manter é o que foi contado no fechamento.
+  const expected = adj ? s.result.counted : result.totals.chips;
+  return { result, diff: result.counted - expected, total: expected };
 }
 
 export function correctChips(sessionId, counts, reason) {
@@ -746,8 +797,8 @@ export function correctChips(sessionId, counts, reason) {
     const n = counts[r.playerId];
     if (!Number.isInteger(n) || n < 0) throw new Error(`Fichas inválidas para ${r.name}`);
   }
-  const { result, diff } = previewCorrection(sessionId, counts);
-  if (diff !== 0) throw new Error(`O total precisa continuar ${result.totals.chips} fichas (está ${diff > 0 ? 'sobrando' : 'faltando'} ${Math.abs(diff)})`);
+  const { result, diff, total } = previewCorrection(sessionId, counts);
+  if (diff !== 0) throw new Error(`O total precisa continuar ${total} fichas (está ${diff > 0 ? 'sobrando' : 'faltando'} ${Math.abs(diff)})`);
   const before = Object.fromEntries(s.result.rows.map((r) => [r.playerId, r]));
   const changes = result.rows
     .filter((r) => r.chips !== before[r.playerId].chips)
@@ -774,11 +825,40 @@ export function settlementItems(s) {
     const receive = upfront ? r.payout : r.net;
     if (receive > 0) items.push({ playerId: r.playerId, name: r.name, kind: 'receber', amount: receive });
   }
-  return items.map((x) => ({ ...x, settledAt: s.settled?.[x.playerId] || null }));
+  return items.map((x) => {
+    // Formato antigo: só a data (= pagou tudo). Novo: { at, paid } com o valor já acertado.
+    const v = s.settled?.[x.playerId];
+    const paid = v == null ? 0 : typeof v === 'number' ? x.amount : Math.min(v.paid ?? x.amount, x.amount);
+    const at = v == null ? null : typeof v === 'number' ? v : v.at;
+    return { ...x, paid, remaining: x.amount - paid, settledAt: paid >= x.amount ? at : null };
+  });
 }
 
 export function setSettled(sessionId, playerId, done) {
   apply({ [`history/${sessionId}/settled/${playerId}`]: done ? Date.now() : null });
+}
+
+/** Registra que só parte do valor foi paga/recebida (o resto continua pendente). */
+export function setPartial(sessionId, playerId, paidCents) {
+  const s = getHistorySession(sessionId);
+  const item = s && settlementItems(s).find((x) => x.playerId === playerId);
+  if (!item) throw new Error('Acerto não encontrado');
+  const paid = Math.round(Number(paidCents));
+  if (!Number.isFinite(paid) || paid < 0) throw new Error('Valor inválido');
+  if (paid > item.amount) throw new Error(`O valor não pode passar de ${(item.amount / 100).toFixed(2).replace('.', ',')}`);
+  apply({ [`history/${sessionId}/settled/${playerId}`]: paid === 0 ? null : { at: Date.now(), paid } });
+}
+
+/** Resumo do caixa: quanto entrou, quanto saiu e quanto deveria estar com ele. */
+export function caixaBalance(s) {
+  const items = settlementItems(s);
+  const sumBy = (kind, key) => items.filter((x) => x.kind === kind).reduce((a, x) => a + x[key], 0);
+  const toReceive = sumBy('pagar', 'amount');
+  const received = sumBy('pagar', 'paid');
+  const toPay = sumBy('receber', 'amount');
+  const paidOut = sumBy('receber', 'paid');
+  const house = s.result.house ?? s.result.totals.rake;
+  return { toReceive, received, toPay, paidOut, inHand: received - paidOut, expected: house, missing: toReceive - received, owed: toPay - paidOut };
 }
 
 export function settleAll(sessionId) {
@@ -786,13 +866,18 @@ export function settleAll(sessionId) {
   if (!s) return;
   const now = Date.now();
   const updates = {};
-  for (const x of settlementItems(s)) if (!x.settledAt) updates[`history/${sessionId}/settled/${x.playerId}`] = now;
+  for (const x of settlementItems(s)) if (!x.settledAt) updates[`history/${sessionId}/settled/${x.playerId}`] = { at: now, paid: x.amount };
   if (Object.keys(updates).length) apply(updates);
 }
 
 /** Acertos de noites anteriores que ainda não foram marcados como feitos. */
 export function openSettlements() {
   return view.history.flatMap((s) => settlementItems(s).filter((x) => !x.settledAt).map((x) => ({ ...x, sessionId: s.id, startedAt: s.startedAt })));
+}
+
+/** Entradas do registro da mesa em ordem (mais recentes primeiro), para auditoria. */
+export function sessionLog() {
+  return [...(view.session?.ledger || [])].reverse();
 }
 
 // ---------- Juntar jogadores com nomes diferentes ----------

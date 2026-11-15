@@ -228,7 +228,7 @@ function owedBanner() {
   const open = S.openSettlements();
   if (!open.length) return '';
   const shortDay = (ts) => new Date(ts).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
-  const shown = open.slice(0, 4).map((x) => `<li><strong>${esc(x.name)}</strong> ${x.kind === 'pagar' ? 'deve' : 'tem a receber'} ${money(x.amount)} <small>(${shortDay(x.startedAt)})</small></li>`).join('');
+  const shown = open.slice(0, 4).map((x) => `<li><strong>${esc(x.name)}</strong> ${x.kind === 'pagar' ? 'deve' : 'tem a receber'} ${money(x.remaining)} <small>(${shortDay(x.startedAt)})</small></li>`).join('');
   return `
     <a class="card owed" href="#/resultado/${open[0].sessionId}">
       <h2>💸 Acertos pendentes (${open.length})</h2>
@@ -269,12 +269,12 @@ function viewMesa() {
   if (!session) return viewStart();
   const inTable = new Set(session.players.map((p) => p.name.toLowerCase()));
   const frequent = S.frequentPlayers().filter((n) => !inTable.has(n.toLowerCase()));
-  const recent = [...session.ledger].filter((e) => ['buy', 'void', 'cashout'].includes(e.type)).reverse().slice(0, 6);
-  const nameOf = (id) => session.players.find((p) => p.id === id)?.name ?? '—';
+  const recent = S.sessionLog().filter((e) => LOG_TYPES.has(e.type)).slice(0, 4);
+  const t = S.buyTerms(settings);
 
   return `
     ${summaryBar()}
-    <p class="session-meta">Começou ${hour(session.startedAt)} · ${termsLine(settings)}</p>
+    <p class="session-meta">Começou ${hour(session.startedAt)} · buy ${money(t.value)} = ${num(t.chips)} fichas${t.rakeChips ? ` (+${t.rakeChips} rake)` : ''} · ficha ${money(Math.round(t.chipValue))}</p>
     ${pendingSection()}
     <section class="players">
       ${session.players.filter((p) => !p.cashout).map((p) => {
@@ -291,24 +291,59 @@ function viewMesa() {
       }).join('') || `<p class="muted">${session.players.length ? 'Todos já encerraram o jogo.' : 'Nenhum jogador ainda.'}</p>`}
     </section>
     ${outSection(session)}
-    <section class="card">
+    <details class="card add-player" ${session.players.length < 2 ? 'open' : ''}>
+      <summary><h2>＋ Adicionar jogador</h2></summary>
       <form class="inline-form" data-form="player-add">
-        <input class="field" name="name" placeholder="Adicionar jogador" autocomplete="off" enterkeyhint="done" />
+        <input class="field" name="name" placeholder="Nome do jogador" autocomplete="off" enterkeyhint="done" />
         <button class="btn">Adicionar</button>
       </form>
       ${frequent.length ? `<div class="chips">${frequent.map((n) => `<button class="chip" data-action="player-quick" data-name="${esc(n)}">+ ${esc(n)}</button>`).join('')}</div>` : ''}
-    </section>
+    </details>
     <a class="btn primary big block" href="#/fechar">Finalizar jogatina</a>
-    ${owedBanner()}
     ${recent.length ? `
     <section class="card">
-      <h2>Últimos registros</h2>
-      <ul class="log">${recent.map((e) => e.type === 'buy'
-        ? `<li class="${e.voided ? 'voided' : ''}"><time>${hour(e.at)}</time> <span>${e.voided ? 'Buy' : e.pending ? '⏳ Pedido de buy' : `Buy #${e.seq}`} · <strong>${esc(nameOf(e.playerId))}</strong></span> <span>${money(e.value)}</span></li>`
-        : e.type === 'cashout' ? `<li><time>${hour(e.at)}</time> <span>🏁 <strong>${esc(nameOf(e.playerId))}</strong> encerrou o jogo com ${num(e.chips)} fichas</span></li>`
-        : `<li class="void"><time>${hour(e.at)}</time> <span>Anulado · <strong>${esc(nameOf(e.playerId))}</strong> — ${esc(e.reason)}</span></li>`).join('')}
-      </ul>
-    </section>` : ''}`;
+      <div class="card-head"><h2>Registro</h2><button class="link" data-action="log">Ver tudo</button></div>
+      <ul class="log">${recent.map((e) => logLine(e, session)).join('')}</ul>
+    </section>` : ''}
+    ${owedBanner()}`;
+}
+
+/** Tipos que aparecem no registro da mesa. */
+const LOG_TYPES = new Set(['buy', 'void', 'approve', 'cashout', 'cashout_edit', 'cashout_undo', 'player_add', 'player_remove', 'player_rename', 'reopen']);
+
+/** Uma linha do registro da mesa, em português simples. */
+function logLine(e, session) {
+  const nameOf = (id) => esc(session.players.find((p) => p.id === id)?.name ?? e.name ?? '—');
+  const who = `<strong>${nameOf(e.playerId)}</strong>`;
+  const line = (cls, text, extra = '') => `<li class="${cls}"><time>${hour(e.at)}</time><span>${text}</span>${extra}</li>`;
+  switch (e.type) {
+    case 'buy': {
+      const label = e.voided ? 'Buy anulado' : e.pending ? '⏳ Pedido de buy' : `Buy #${e.seq}`;
+      const note = e.byAdmin ? ` <small class="muted">(lançado pelo admin: ${esc(e.byAdmin)})</small>` : e.voided ? ` <small class="muted">— ${esc(e.voided.reason)}</small>` : '';
+      return line(e.voided ? 'voided' : '', `${label} · ${who}${note}`, `<span>${money(e.value)}</span>`);
+    }
+    case 'void': return line('void', `Anulado · ${who} — ${esc(e.reason)}`);
+    case 'approve': return line('muted', `✓ Aprovado · ${who}${e.refIds?.length > 1 ? ` (${e.refIds.length} buys)` : ''}`);
+    case 'cashout': return line('', `🏁 ${who} saiu com ${num(e.chips)} fichas`);
+    case 'cashout_edit': return line('', `✎ Fichas de ${who}: ${num(e.from)} → ${num(e.chips)}`);
+    case 'cashout_undo': return line('', `↩︎ ${who} voltou para a mesa`);
+    case 'player_add': return line('muted', `${who} entrou na mesa`);
+    case 'player_remove': return line('muted', `${who} saiu da mesa (sem buys)`);
+    case 'player_rename': return line('muted', `${esc(e.from)} agora é ${esc(e.to)}`);
+    case 'reopen': return line('void', `↩︎ Partida reaberta — ${esc(e.reason)}`);
+    default: return '';
+  }
+}
+
+function openLog() {
+  const { session } = S.getState();
+  if (!session) return;
+  const all = S.sessionLog().filter((e) => LOG_TYPES.has(e.type));
+  openModal(
+    `<header><h2>Registro da mesa</h2><button class="icon-btn" data-close aria-label="Fechar">✕</button></header>
+     <p class="hint">Tudo o que aconteceu nesta jogatina, do mais novo para o mais antigo. Nada é apagado.</p>
+     <ul class="log full">${all.map((e) => logLine(e, session)).join('')}</ul>`,
+  );
 }
 
 /** Jogadores que já encerraram o jogo (contagem travada). */
@@ -334,15 +369,7 @@ function viewFechar() {
   const { draft } = session;
   return `
     ${summaryBar()}
-    <section class="card">
-      <h2>Fechamento</h2>
-      <ol class="steps">
-        <li>Conte as fichas de cada jogador <strong>na frente dele</strong>.</li>
-        <li>Digite a quantidade — quem saiu zerado recebe <strong>0</strong>.</li>
-        <li>O jogador confere e marca <strong>“Conferido”</strong>.</li>
-        <li>O total contado precisa bater com as fichas em jogo. Senão, não fecha.</li>
-      </ol>
-    </section>
+    <p class="session-meta">Conte as fichas de cada um na frente dele e digite (quebrou = <strong>0</strong>). A soma precisa dar <strong>${num(S.totals().chips)}</strong>.</p>
     <section class="close-list">
       ${session.players.map((p) => {
         const st = S.playerStats(p.id);
@@ -368,6 +395,7 @@ function viewFechar() {
         <a class="btn ghost" href="#/">Voltar à mesa</a>
         <button class="btn primary" data-action="close-session" disabled>Encerrar e salvar</button>
       </div>
+      <button class="link quebra-link" data-action="close-quebra" hidden>A conta não fecha? Encerrar com diferença…</button>
     </div>`;
 }
 
@@ -406,13 +434,64 @@ function updateFechar() {
   if (!session.players.length) status = 'Nenhum jogador na mesa.';
   else if (waiting) status = `⏳ ${plural(waiting, 'buy aguardando', 'buys aguardando')} aprovação do admin. Aprove ou recuse na mesa antes de fechar.`;
   else if (missing) status = `Contadas <strong>${num(r.counted)}</strong> de <strong>${num(expected)}</strong> fichas · falta contar ${plural(missing, 'jogador', 'jogadores')}.`;
-  else if (r.diff < 0) status = `⚠️ Faltam <strong>${num(-r.diff)}</strong> fichas (${num(r.counted)} de ${num(expected)}). Reconte antes de fechar.`;
-  else if (r.diff > 0) status = `⚠️ Sobram <strong>${num(r.diff)}</strong> fichas (${num(r.counted)} de ${num(expected)}). Tem ficha a mais na mesa ou buy sem registro.`;
+  else if (r.diff < 0) status = `⚠️ Faltam <strong>${num(-r.diff)}</strong> fichas (${num(r.counted)} de ${num(expected)}). Reconte; se não achar, encerre com diferença.`;
+  else if (r.diff > 0) status = `⚠️ Sobram <strong>${num(r.diff)}</strong> fichas (${num(r.counted)} de ${num(expected)}). Reconte, ou veja se faltou lançar algum buy.`;
   else if (unconfirmed) status = `✅ Contagem bate! Falta ${plural(unconfirmed, 'jogador', 'jogadores')} marcar “Conferido”.`;
   else status = `✅ Tudo certo: ${num(expected)} fichas conferidas. Prêmio de ${money(r.totals.prize)}.`;
   app.querySelector('[data-status]').innerHTML = status;
 
   app.querySelector('[data-action="close-session"]').disabled = !(session.players.length && !waiting && !missing && r.diff === 0 && !unconfirmed);
+  app.querySelector('[data-action="close-quebra"]').hidden = !(session.players.length && !waiting && !missing && r.diff !== 0);
+}
+
+const QUEBRA_MODES = {
+  casa: { title: 'O caixa absorve', text: (d, v) => (d < 0 ? `Cada ficha vale o mesmo de sempre. O caixa fica com ${v} a mais (as fichas que sumiram).` : `Cada ficha vale o mesmo de sempre. O caixa tira ${v} do rake para pagar as fichas a mais.`) },
+  proporcional: { title: 'Dividir entre todos', text: (d, v) => `O prêmio é dividido pelas fichas contadas. A diferença de ${v} se espalha entre quem ficou com fichas, na proporção de cada um.` },
+  jogador: { title: 'Fica na conta de um jogador', text: (d, v) => (d < 0 ? `As fichas que sumiram eram desse jogador: ele recebe os ${v}.` : `As fichas a mais vieram desse jogador: ele deixa de receber ${v}.`) },
+};
+
+/** Encerrar mesmo com a contagem diferente: escolhe quem absorve a quebra e registra o motivo. */
+async function openQuebra() {
+  const { session } = S.getState();
+  if (!session) return;
+  const base = S.settlement(session.draft.counts);
+  const d = base.diff;
+  const value = money(Math.abs(Math.round((d * base.totals.prize) / base.totals.chips)));
+  if (!(await requireAdmin('encerrar com diferença'))) return;
+  let mode = 'casa';
+  openModal(
+    `<header><h2>Encerrar com diferença</h2><button class="icon-btn" data-close aria-label="Fechar">✕</button></header>
+     <p class="notice">${d < 0 ? 'Faltam' : 'Sobram'} <strong>${num(Math.abs(d))} fichas</strong> (≈ ${value}): contadas ${num(base.counted)} de ${num(base.totals.chips)}. Antes, reconte e confira se não faltou lançar buy.</p>
+     <div class="choice" role="radiogroup">${Object.entries(QUEBRA_MODES).map(([k, m]) => `
+       <label class="choice-item"><input type="radio" name="qmode" value="${k}" ${k === mode ? 'checked' : ''} />
+         <span><strong>${m.title}</strong><small>${m.text(d, value)}</small></span></label>`).join('')}
+     </div>
+     <label class="count" data-qplayer hidden><span>Jogador</span>
+       <select class="field" data-qp>${session.players.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></label>
+     <div class="preview" data-qprev></div>
+     <label class="count"><span>Motivo</span><input class="field" data-qreason maxlength="100" placeholder="Ex.: uma ficha caiu e ninguém achou" /></label>
+     <footer><button type="button" class="btn ghost" data-close>Cancelar</button><button type="button" class="btn primary" data-qgo disabled>Encerrar</button></footer>`,
+    (root) => {
+      const adjust = () => ({ mode, playerId: root.querySelector('[data-qp]').value });
+      const update = () => {
+        mode = root.querySelector('[name=qmode]:checked').value;
+        root.querySelector('[data-qplayer]').hidden = mode !== 'jogador';
+        const r = S.settlementWith(session.draft.counts, adjust());
+        root.querySelector('[data-qprev]').innerHTML = `<ul class="transfers">${[...r.rows].sort((a, b) => b.net - a.net).map((x) => `<li><span>${esc(x.name)}</span><strong class="${netClass(x.net)}">${signed(x.net)}</strong></li>`).join('')}
+          <li class="muted"><span>Caixa (rake${r.adjustment?.house ? ' + diferença' : ''})</span><strong>${money(r.house)}</strong></li></ul>`;
+        root.querySelector('[data-qgo]').disabled = !root.querySelector('[data-qreason]').value.trim();
+      };
+      root.addEventListener('change', update);
+      root.addEventListener('input', update);
+      root.querySelector('[data-qgo]').addEventListener('click', async (e) => {
+        e.currentTarget.disabled = true;
+        const sid = await attemptAsync(() => S.closeSession({ ...adjust(), reason: root.querySelector('[data-qreason]').value }));
+        if (sid) { closeModal(); toast('Jogatina encerrada com diferença registrada'); location.hash = `#/resultado/${sid}`; }
+        else update();
+      });
+      update();
+    },
+  );
 }
 
 /** Quem paga e quem recebe no acerto pelo caixa. */
@@ -421,7 +500,16 @@ function caixaLists(s) {
   const upfront = s.settingsAtClose?.paymentMode === 'caixa';
   const pagar = upfront ? [] : r.rows.filter((x) => x.net < 0).map((x) => ({ name: x.name, amount: -x.net })).sort((a, b) => b.amount - a.amount);
   const receber = r.rows.filter((x) => (upfront ? x.payout : x.net) > 0).map((x) => ({ name: x.name, amount: upfront ? x.payout : x.net })).sort((a, b) => b.amount - a.amount);
-  return { pagar, receber, rake: r.totals.rake };
+  return { pagar, receber, rake: r.house ?? r.totals.rake };
+}
+
+/** Texto da quebra registrada no fechamento, se houve. */
+function quebraText(s) {
+  const a = s.result.adjustment;
+  if (!a) return '';
+  const who = a.mode === 'jogador' ? s.result.rows.find((r) => r.playerId === a.playerId)?.name ?? 'um jogador' : '';
+  const how = { casa: 'o caixa absorveu', proporcional: 'dividida entre todos', jogador: `na conta de ${who}` }[a.mode];
+  return `${a.diff < 0 ? 'Faltaram' : 'Sobraram'} ${num(Math.abs(a.diff))} fichas — ${how}. Motivo: ${a.reason || '—'}`;
 }
 
 /** Chave Pix do caixa: a cadastrada no Admin ou, se não houver, a do jogador com o nome do caixa. */
@@ -442,6 +530,7 @@ function caixaMessage(s) {
     '*A receber:*',
     ...(receber.length ? receber.map((x) => `${x.name} - ${money(x.amount)} - Pix: ${S.pixOf(x.name) || 'não cadastrado'}`) : ['Ninguém']),
     ...(rake ? ['', `Rake (fica no caixa): ${money(rake)}`] : []),
+    ...(s.result.adjustment ? ['', `Obs.: ${quebraText(s)}`] : []),
   ].join('\n');
 }
 
@@ -454,7 +543,43 @@ function whatsappLink(phone, text) {
 
 function settleBtn(sessionId, x) {
   const label = x.kind === 'pagar' ? 'Pago' : 'Recebido';
-  return `<button class="settle ${x.settledAt ? 'on' : ''}" data-action="settle" data-id="${sessionId}" data-player="${x.playerId}" aria-pressed="${Boolean(x.settledAt)}">${x.settledAt ? `✓ ${label}` : `Marcar ${label.toLowerCase()}`}</button>`;
+  const text = x.settledAt ? `✓ ${label}` : x.paid ? `${money(x.paid)} de ${money(x.amount)}` : `Marcar ${label.toLowerCase()}`;
+  return `<button class="settle ${x.settledAt ? 'on' : x.paid ? 'partial' : ''}" data-action="settle" data-id="${sessionId}" data-player="${x.playerId}">${text}</button>`;
+}
+
+/** Marcar acerto: tudo, só uma parte (o resto fica pendente) ou desmarcar. */
+async function openSettle(sessionId, playerId) {
+  const s = S.getHistorySession(sessionId);
+  const x = s && S.settlementItems(s).find((i) => i.playerId === playerId);
+  if (!x) return;
+  if (!(await requireAdmin('marcar acertos'))) return;
+  const verb = x.kind === 'pagar' ? 'pagou' : 'recebeu';
+  openModal(
+    `<header><h2>${esc(x.name)} · ${money(x.amount)}</h2><button class="icon-btn" data-close aria-label="Fechar">✕</button></header>
+     <p class="hint">${x.kind === 'pagar' ? `${esc(x.name)} precisa pagar ao caixa.` : `O caixa precisa pagar a ${esc(x.name)}.`}${x.paid ? ` Já foi: <strong>${money(x.paid)}</strong>.` : ''}</p>
+     <button type="button" class="btn primary block" data-full>✓ ${x.kind === 'pagar' ? 'Pagou' : 'Recebeu'} tudo (${money(x.amount)})</button>
+     <div class="partial-row">
+       <label class="count"><span>Só uma parte (R$)</span><input class="field" data-part inputmode="decimal" placeholder="0,00" value="${x.paid && !x.settledAt ? (x.paid / 100).toFixed(2).replace('.', ',') : ''}" /></label>
+       <button type="button" class="btn" data-partial>Salvar parte</button>
+     </div>
+     ${x.paid ? '<button type="button" class="btn ghost block" data-clear>Desmarcar (voltar a pendente)</button>' : ''}`,
+    (root) => {
+      root.querySelector('[data-full]').addEventListener('click', () => { S.setSettled(sessionId, playerId, true); closeModal(); toast(`${x.name} ${verb} ${money(x.amount)} ✓`); });
+      root.querySelector('[data-partial]').addEventListener('click', () => {
+        const cents = toCents(root.querySelector('[data-part]').value);
+        if (!cents) return toast('Digite o valor', { type: 'error' });
+        try {
+          S.setPartial(sessionId, playerId, cents);
+        } catch (err) {
+          return toast(err.message, { type: 'error' });
+        }
+        const after = S.settlementItems(S.getHistorySession(sessionId)).find((i) => i.playerId === playerId);
+        closeModal();
+        toast(after.settledAt ? `${x.name} ${verb} tudo ✓` : `Falta ${money(after.remaining)} de ${x.name}`);
+      });
+      root.querySelector('[data-clear]')?.addEventListener('click', () => { S.setSettled(sessionId, playerId, false); closeModal(); toast('Acerto desmarcado'); });
+    },
+  );
 }
 
 function viewResultado(id) {
@@ -468,7 +593,12 @@ function viewResultado(id) {
   const lists = caixaLists(s);
   const items = S.settlementItems(s);
   const openCount = items.filter((x) => !x.settledAt).length;
+  const bal = S.caixaBalance(s);
   const wa = whatsappLink(settings.caixaPhone, caixaMessage(s));
+  const itemRow = (x) => `<li class="${x.settledAt ? 'is-settled' : ''}"><span><strong>${esc(x.name)}</strong>${x.kind === 'pagar'
+      ? `<small class="pix ${caixaPix() ? '' : 'missing'}">Pix do caixa: ${esc(caixaPix() || 'não cadastrado')}</small>`
+      : `<small class="pix ${S.pixOf(x.name) ? '' : 'missing'}">Pix: ${esc(S.pixOf(x.name) || 'não cadastrado')}</small>`}</span>
+      <span class="right"><strong class="${x.kind === 'pagar' ? 'neg' : 'pos'}">${money(x.amount)}</strong>${settleBtn(s.id, x)}</span></li>`;
   return `
     <section class="hero small">
       <p class="muted">${day(s.startedAt)} · ${hour(s.startedAt)}–${hour(s.closedAt)}</p>
@@ -477,51 +607,62 @@ function viewResultado(id) {
     <section class="summary three">
       <div class="stat main"><span>Pote total</span><strong>${money(r.totals.pot)}</strong></div>
       <div class="stat"><span>Buys</span><strong>${r.totals.count}</strong></div>
-      <div class="stat"><span>Rake</span><strong>${money(r.totals.rake)}</strong></div>
-      <div class="stat"><span>Prêmio</span><strong>${money(r.totals.prize)}</strong></div>
+      <div class="stat"><span>Fichas</span><strong>${num(r.totals.chips)}</strong></div>
+      <div class="stat"><span>Caixa</span><strong>${money(lists.rake)}</strong></div>
     </section>
+    ${r.adjustment ? `<p class="notice">⚠️ ${esc(quebraText(s))}</p>` : ''}
+
+    <section class="card caixa">
+      <div class="card-head"><h2>Acerto${settings.caixaName ? ` · caixa: ${esc(settings.caixaName)}` : ''}</h2>
+        ${items.length ? `<span class="pill ${openCount ? 'warn' : 'ok'}">${openCount ? `${items.length - openCount}/${items.length} feitos` : '✓ tudo acertado'}</span>` : ''}</div>
+      <h3>A pagar ao caixa</h3>
+      <ul class="transfers">${items.filter((x) => x.kind === 'pagar').map(itemRow).join('') || '<li class="muted">Ninguém</li>'}</ul>
+      <h3>O caixa paga</h3>
+      <ul class="transfers">${items.filter((x) => x.kind === 'receber').map(itemRow).join('') || '<li class="muted">Ninguém</li>'}</ul>
+      <div class="balance">
+        <div><span>Entrou no caixa</span><strong>${money(bal.received)}</strong><small>${bal.missing ? `falta ${money(bal.missing)}` : 'completo'}</small></div>
+        <div><span>Saiu do caixa</span><strong>${money(bal.paidOut)}</strong><small>${bal.owed ? `falta ${money(bal.owed)}` : 'completo'}</small></div>
+        <div><span>Fica com o caixa</span><strong>${money(bal.inHand)}</strong><small>no fim: ${money(bal.expected)}</small></div>
+      </div>
+      ${lists.pagar.length && !caixaPix() ? '<p class="notice">Falta a chave Pix do caixa (Admin → Caixa).</p>' : ''}
+      ${lists.receber.some((x) => !S.pixOf(x.name)) ? '<p class="notice">Tem jogador para receber sem chave Pix (Admin → Jogadores e Pix).</p>' : ''}
+      <div class="row wrap">
+        ${wa ? `<a class="btn primary whatsapp" href="${esc(wa)}" target="_blank" rel="noopener">Enviar para o caixa</a>`
+             : '<button class="btn primary whatsapp" data-action="caixa-phone">Enviar para o caixa</button>'}
+        <button class="btn" data-action="copy-caixa" data-id="${s.id}">Copiar mensagem</button>
+      </div>
+      ${openCount > 1 ? `<button class="btn ghost block" data-action="settle-all" data-id="${s.id}">Marcar todos como acertados</button>` : ''}
+    </section>
+
     <section class="card">
       <h2>Jogadores</h2>
       <div class="table-wrap"><table class="results">
         <thead><tr><th>Jogador</th><th>Buys</th><th class="hide-xs">Pagou</th><th class="hide-xs">Fichas</th><th>Recebe</th><th>Saldo</th></tr></thead>
         <tbody>${rows.map((x) => `<tr><td><strong>${esc(x.name)}</strong>${x.leftAt ? `<small class="sub">saiu ${hour(x.leftAt)}</small>` : ''}</td><td>${x.buys}</td><td class="hide-xs">${money(x.paid)}</td><td class="hide-xs">${num(x.chips)}</td><td>${money(x.payout)}</td><td class="${netClass(x.net)}"><strong>${signed(x.net)}</strong></td></tr>`).join('')}</tbody>
       </table></div>
-      <button class="btn small ghost" data-action="correct-chips" data-id="${s.id}">✎ Corrigir fichas</button>
       ${s.corrections.length ? `<div class="corrections"><h3>Correções</h3><ul>${s.corrections.map((c) => `<li>
         <small class="muted">${new Date(c.at).toLocaleDateString('pt-BR')} ${hour(c.at)} · ${esc(c.reason)}</small>
         <span>${(c.changes || []).map((x) => `${esc(x.name)}: ${num(x.from)} → ${num(x.to)} fichas (${signed(x.netFrom)} → ${signed(x.netTo)})`).join(' · ')}</span>
       </li>`).join('')}</ul></div>` : ''}
     </section>
-    <section class="card caixa">
-      <h2>Acerto com o caixa${settings.caixaName ? ` · ${esc(settings.caixaName)}` : ''}</h2>
-      ${items.length ? `<p class="settle-status ${openCount ? '' : 'done'}">${openCount ? `${items.length - openCount} de ${items.length} acertos feitos` : '✅ Todos os acertos feitos'}</p>` : ''}
-      <h3>A pagar</h3>
-      <ul class="transfers">${items.filter((x) => x.kind === 'pagar').map((x) => `<li class="${x.settledAt ? 'is-settled' : ''}"><span><strong>${esc(x.name)}</strong><small class="pix ${caixaPix() ? '' : 'missing'}">Pix do caixa: ${esc(caixaPix() || 'não cadastrado')}</small></span>
-        <span class="right"><strong class="neg">${money(x.amount)}</strong>${settleBtn(s.id, x)}</span></li>`).join('') || '<li class="muted">Ninguém</li>'}</ul>
-      <h3>A receber</h3>
-      <ul class="transfers">${items.filter((x) => x.kind === 'receber').map((x) => `<li class="${x.settledAt ? 'is-settled' : ''}"><span><strong>${esc(x.name)}</strong><small class="pix ${S.pixOf(x.name) ? '' : 'missing'}">Pix: ${esc(S.pixOf(x.name) || 'não cadastrado')}</small></span>
-        <span class="right"><strong class="pos">${money(x.amount)}</strong>${settleBtn(s.id, x)}</span></li>`).join('') || '<li class="muted">Ninguém</li>'}</ul>
-      ${lists.rake ? `<p class="muted small">Rake (fica no caixa): <strong>${money(lists.rake)}</strong></p>` : ''}
-      ${lists.pagar.length && !caixaPix() ? '<p class="notice">Falta a chave Pix do caixa. Cadastre em Admin → Caixa (a mensagem usa a chave atual).</p>' : ''}
-      ${lists.receber.some((x) => !S.pixOf(x.name)) ? '<p class="notice">Tem jogador para receber sem chave Pix. Cadastre em Admin → Chaves Pix (a mensagem usa a chave atual).</p>' : ''}
-      <div class="row wrap">
-        ${wa ? `<a class="btn primary whatsapp" href="${esc(wa)}" target="_blank" rel="noopener">Enviar para o caixa (WhatsApp)</a>`
-             : '<button class="btn primary whatsapp" data-action="caixa-phone">Enviar para o caixa (WhatsApp)</button>'}
-        <button class="btn" data-action="copy-caixa" data-id="${s.id}">Copiar mensagem</button>
-      </div>
-      ${openCount > 1 ? `<button class="btn ghost block" data-action="settle-all" data-id="${s.id}">Marcar todos como acertados</button>` : ''}
-    </section>
+
     ${caixa ? '' : `
     <details class="card">
       <summary><h2>Alternativa: Pix direto entre jogadores</h2></summary>
       <ul class="transfers">${r.transfers.map((t) => `<li><span><strong>${esc(t.from)}</strong> → <strong>${esc(t.to)}</strong></span><strong>${money(t.amount)}</strong></li>`).join('') || '<li>Ninguém deve nada 🎉</li>'}</ul>
     </details>`}
+
+    <section class="card">
+      <h2>Algo errado?</h2>
+      <div class="fix-grid">
+        <button class="fix" data-action="correct-chips" data-id="${s.id}"><strong>✎ Corrigir fichas</strong><small>Contagem trocada entre jogadores</small></button>
+        <button class="fix" data-action="reopen-session" data-id="${s.id}"><strong>↩︎ Reabrir partida</strong><small>Faltou buy, jogador errado, etc.</small></button>
+        <button class="fix" data-action="audit" data-id="${s.id}"><strong>✍️ Ver assinaturas</strong><small>Conferir cada buy</small></button>
+        <a class="fix" href="#/ajuda"><strong>? Outros problemas</strong><small>O que fazer em cada caso</small></a>
+      </div>
+    </section>
     <div class="row wrap">
       <button class="btn" data-action="share" data-id="${s.id}">Compartilhar resumo</button>
-      <button class="btn" data-action="audit" data-id="${s.id}">Ver assinaturas</button>
-    </div>
-    <div class="row wrap">
-      <a class="btn ghost" href="#/historico">Histórico</a>
       <button class="btn danger" data-action="delete-session" data-id="${s.id}">Mandar para a lixeira</button>
     </div>`;
 }
@@ -741,8 +882,8 @@ function syncSection() {
   const s = S.syncInfo();
   if (s.mode === 'local') {
     return `
-    <section class="card">
-      <h2>Sincronização online</h2>
+    <details class="card acc" open>
+      <summary><span class="acc-title">Sincronização online</span><span class="acc-val">⚪ só neste aparelho</span></summary>
       <p class="muted small">Hoje os dados ficam só neste aparelho. Crie um grupo online para todos os celulares verem e lançarem buys na mesma mesa, em tempo real.</p>
       ${s.hasConfig ? '' : `
         <details class="setup"><summary>Configurar Firebase (uma vez só)</summary>
@@ -753,19 +894,19 @@ function syncSection() {
         <button class="btn primary" data-action="group-create">Criar grupo online</button>
         <button class="btn" data-action="group-join">Entrar com código</button>
       </div>
-    </section>`;
+    </details>`;
   }
   const labels = { connecting: 'Conectando…', online: '🟢 Online', offline: '🟠 Sem conexão — os lançamentos serão enviados quando a internet voltar', error: `🔴 Erro: ${esc(s.error)}` };
   return `
-    <section class="card">
-      <h2>Sincronização online</h2>
+    <details class="card acc">
+      <summary><span class="acc-title">Sincronização online</span><span class="acc-val">${{ online: '🟢 online', offline: '🟠 sem conexão', error: '🔴 erro', connecting: 'conectando…' }[s.mode] || ''}</span></summary>
       <p>${labels[s.mode] || ''}</p>
       <p class="muted small">Código do grupo: <strong class="mono">${esc(s.code)}</strong>. Envie o link abaixo para os amigos — ao abrir, o celular entra no grupo.</p>
       <div class="row wrap">
         <button class="btn primary" data-action="group-invite">Compartilhar link do grupo</button>
         <button class="btn danger" data-action="group-leave">Sair do grupo</button>
       </div>
-    </section>`;
+    </details>`;
 }
 
 let adminGateOpen = false;
@@ -779,99 +920,146 @@ function viewAdmin() {
   const dis = locked ? 'disabled' : '';
   const t = S.buyTerms(settings);
   const rakeField = { perBuy: ['(fichas por buy)', settings.rakeValue, '1'], percent: ['(% do pote)', settings.rakeValue, '0.1'], fixed: ['(R$ na noite)', (settings.rakeValue / 100).toFixed(2), '0.01'], none: ['', 0, '1'] }[settings.rakeMode];
+  const acc = (title, value, body, open = false) => `<details class="card acc" ${open ? 'open' : ''}><summary><span class="acc-title">${title}</span><span class="acc-val">${value}</span></summary>${body}</details>`;
+  const pixCount = S.knownPlayers().filter((n) => S.pixOf(n)).length;
   return `
-    <section class="hero small"><h1>Admin</h1><p class="muted">Configurações do grupo</p></section>
+    <section class="hero small"><h1>Admin</h1><p class="muted"><a class="link" href="#/ajuda">O que fazer se algo der errado →</a></p></section>
     ${pendingSection()}
-    <section class="card">
-      <h2>Aparelho do administrador</h2>
+    <section class="card device">
       ${!settings.adminPin
-        ? '<p class="muted small">Defina um PIN do admin (abaixo, em Segurança) para escolher o aparelho que aprova os buys.</p>'
+        ? '<p class="muted small">Defina um PIN (em Segurança) para escolher o celular que aprova os buys.</p>'
         : S.isAdminDevice()
-          ? `<p>✅ Este aparelho é do admin: recebe os pedidos de buy, avisa quando chega um novo e aprova sem pedir o PIN.</p>
-             <button class="btn" data-action="admin-device-off">Deixar de ser o aparelho do admin</button>`
-          : `<p class="muted small">Use no celular de quem aprova os buys. Nos outros aparelhos, aprovar pede o PIN.</p>
-             <button class="btn primary" data-action="admin-device-on">Usar este aparelho como admin</button>`}
+          ? `<p><strong>✅ Este é o celular do admin.</strong> <span class="muted small">Recebe os pedidos de buy e aprova sem pedir PIN.</span></p>
+             <button class="btn small ghost" data-action="admin-device-off">Deixar de ser o celular do admin</button>`
+          : `<p class="muted small">Este celular pede o PIN para aprovar. No celular de quem aprova os buys, ative:</p>
+             <button class="btn primary block" data-action="admin-device-on">Usar este celular como admin</button>`}
     </section>
-    ${syncSection()}
-    <form class="card form" data-form="settings">
-      <h2>Grupo</h2>
-      <label>Nome do grupo<input class="field" name="groupName" value="${esc(settings.groupName)}" maxlength="40" /></label>
-      <label><span>Jogadores frequentes <small class="muted">— um por linha</small></span>
-        <textarea class="field" name="regulars" rows="6">${esc((settings.regulars || []).join('\n'))}</textarea></label>
 
-      <h2>Caixa</h2>
-      <div class="grid2">
-        <label>Quem cuida do caixa<input class="field" name="caixaName" value="${esc(settings.caixaName)}" maxlength="30" placeholder="Nome" /></label>
-        <label>WhatsApp do caixa<input class="field" name="caixaPhone" type="tel" inputmode="tel" value="${esc(settings.caixaPhone)}" placeholder="(11) 99999-9999" /></label>
-      </div>
-      <label><span>Chave Pix do caixa <small class="muted">— vai na mensagem para quem precisa pagar</small></span>
-        <input class="field" name="caixaPix" value="${esc(settings.caixaPix)}" placeholder="CPF, celular, e-mail…" autocomplete="off" /></label>
+    <form class="form-stack" data-form="settings">
+      ${acc('Valores da mesa', `${money(t.value)} · ${num(settings.chipsPerBuy)} fichas${t.rakeChips ? ` · rake ${t.rakeChips}` : ''}`, `
+        <div class="form">
+          ${locked ? '<p class="notice">🔒 Travados durante a jogatina para não misturar buys de preços diferentes.</p>' : ''}
+          <div class="grid2">
+            <label>Valor do buy (R$)<input class="field" name="buyValue" type="number" step="0.01" min="0.01" inputmode="decimal" value="${(settings.buyValue / 100).toFixed(2)}" ${dis} required /></label>
+            <label>Fichas por buy<input class="field" name="chipsPerBuy" type="number" step="1" min="1" inputmode="numeric" value="${settings.chipsPerBuy}" ${dis} required /></label>
+          </div>
+          <div class="grid2">
+            <label>Tipo de rake
+              <select class="field" name="rakeMode" ${dis}>
+                ${[['perBuy', 'Fichas por buy'], ['percent', '% do pote'], ['fixed', 'Valor fixo na noite (R$)'], ['none', 'Sem rake']]
+                  .map(([v, l]) => `<option value="${v}" ${settings.rakeMode === v ? 'selected' : ''}>${l}</option>`).join('')}
+              </select></label>
+            <label ${settings.rakeMode === 'none' ? 'hidden' : ''}><span>Valor do rake <span class="muted">${rakeField[0]}</span></span>
+              <input class="field" name="rakeValue" type="number" step="${rakeField[2]}" min="0" inputmode="decimal" value="${rakeField[1]}" ${dis} /></label>
+          </div>
+          <p class="notice info">Cada buy: <strong>${money(t.value)}</strong> = ${num(settings.chipsPerBuy)} fichas (1 ficha = ${money(Math.round(t.chipValue))})${t.rakeChips ? ` · ${plural(t.rakeChips, 'ficha', 'fichas')} (${money(t.rake)}) vão para o rake · <strong>${num(t.chips)} entram em jogo</strong>` : ''}.</p>
+          <label>Como os buys são pagos
+            <select class="field" name="paymentMode" ${dis}>
+              <option value="acerto" ${settings.paymentMode === 'acerto' ? 'selected' : ''}>Acerto no final, pelo caixa</option>
+              <option value="caixa" ${settings.paymentMode === 'caixa' ? 'selected' : ''}>Na hora, para o caixa</option>
+            </select></label>
+        </div>`)}
 
-      <h2>Chaves Pix dos jogadores</h2>
-      <p class="muted small" style="margin:0">Aparecem na mensagem do caixa, ao lado de quem tem a receber.</p>
-      <div class="pix-list">${S.knownPlayers().map((n) => `<label class="pix-row"><span>${esc(n)}</span>
-        <input class="field" name="pix:${esc(n)}" value="${esc(S.pixOf(n))}" placeholder="CPF, celular, e-mail…" autocomplete="off" /></label>`).join('')}</div>
+      ${acc('Caixa', settings.caixaName ? esc(settings.caixaName) : '<span class="warn-text">não definido</span>', `
+        <div class="form">
+          <div class="grid2">
+            <label>Quem cuida do caixa<input class="field" name="caixaName" value="${esc(settings.caixaName)}" maxlength="30" placeholder="Nome" /></label>
+            <label>WhatsApp do caixa<input class="field" name="caixaPhone" type="tel" inputmode="tel" value="${esc(settings.caixaPhone)}" placeholder="(11) 99999-9999" /></label>
+          </div>
+          <label><span>Chave Pix do caixa <small class="muted">— vai na mensagem para quem precisa pagar</small></span>
+            <input class="field" name="caixaPix" value="${esc(settings.caixaPix)}" placeholder="CPF, celular, e-mail…" autocomplete="off" /></label>
+        </div>`)}
 
-      <h2>Valores</h2>
-      ${locked ? '<p class="notice">🔒 Valores travados durante a jogatina para não misturar buys de preços diferentes. Encerre a jogatina para alterar.</p>' : ''}
-      <div class="grid2">
-        <label>Valor do buy (R$)<input class="field" name="buyValue" type="number" step="0.01" min="0.01" inputmode="decimal" value="${(settings.buyValue / 100).toFixed(2)}" ${dis} required /></label>
-        <label>Fichas por buy<input class="field" name="chipsPerBuy" type="number" step="1" min="1" inputmode="numeric" value="${settings.chipsPerBuy}" ${dis} required /></label>
-      </div>
-      <div class="grid2">
-        <label>Tipo de rake
-          <select class="field" name="rakeMode" ${dis}>
-            ${[['perBuy', 'Fichas por buy'], ['percent', '% do pote'], ['fixed', 'Valor fixo na noite (R$)'], ['none', 'Sem rake']]
-              .map(([v, l]) => `<option value="${v}" ${settings.rakeMode === v ? 'selected' : ''}>${l}</option>`).join('')}
-          </select></label>
-        <label ${settings.rakeMode === 'none' ? 'hidden' : ''}><span>Valor do rake <span class="muted">${rakeField[0]}</span></span>
-          <input class="field" name="rakeValue" type="number" step="${rakeField[2]}" min="0" inputmode="decimal" value="${rakeField[1]}" ${dis} /></label>
-      </div>
-      <p class="notice info">Cada buy: <strong>${money(t.value)}</strong> = ${num(settings.chipsPerBuy)} fichas (1 ficha = ${money(Math.round(t.chipValue))})${t.rakeChips ? ` · ${plural(t.rakeChips, 'ficha', 'fichas')} (${money(t.rake)}) vão para o rake · <strong>${num(t.chips)} fichas entram em jogo</strong>` : ''}.</p>
-      <label>Como os buys são pagos
-        <select class="field" name="paymentMode" ${dis}>
-          <option value="acerto" ${settings.paymentMode === 'acerto' ? 'selected' : ''}>Acerto no final (Pix entre jogadores)</option>
-          <option value="caixa" ${settings.paymentMode === 'caixa' ? 'selected' : ''}>Na hora, para um caixa/banca</option>
-        </select></label>
+      ${acc('Jogadores e Pix', `${(settings.regulars || []).length} frequentes · ${pixCount} com Pix`, `
+        <div class="form">
+          <label>Nome do grupo<input class="field" name="groupName" value="${esc(settings.groupName)}" maxlength="40" /></label>
+          <label><span>Jogadores frequentes <small class="muted">— um por linha</small></span>
+            <textarea class="field" name="regulars" rows="5">${esc((settings.regulars || []).join('\n'))}</textarea></label>
+          <p class="label">Chaves Pix (aparecem para quem tem a receber)</p>
+          <div class="pix-list">${S.knownPlayers().map((n) => `<label class="pix-row"><span>${esc(n)}</span>
+            <input class="field" name="pix:${esc(n)}" value="${esc(S.pixOf(n))}" placeholder="CPF, celular, e-mail…" autocomplete="off" /></label>`).join('')}</div>
+        </div>`)}
 
-      <h2>Conferência</h2>
-      <label class="switch"><input type="checkbox" name="requireSignature" ${settings.requireSignature ? 'checked' : ''} /> Exigir assinatura do jogador em cada buy</label>
-      <label class="switch"><input type="checkbox" name="requireApproval" ${settings.requireApproval ? 'checked' : ''} /> Cada buy precisa ser aprovado pelo admin</label>
-      <label class="switch"><input type="checkbox" name="requireConfirmAtClose" ${settings.requireConfirmAtClose ? 'checked' : ''} /> Cada jogador marca “Conferido” no fechamento</label>
+      ${acc('Regras de conferência', [settings.requireSignature && 'assinatura', settings.requireApproval && 'aprovação', settings.requireConfirmAtClose && 'conferido'].filter(Boolean).join(' · ') || 'nenhuma', `
+        <div class="form">
+          <label class="switch"><input type="checkbox" name="requireSignature" ${settings.requireSignature ? 'checked' : ''} /> Jogador assina cada buy</label>
+          <label class="switch"><input type="checkbox" name="requireApproval" ${settings.requireApproval ? 'checked' : ''} /> Admin aprova cada buy</label>
+          <label class="switch"><input type="checkbox" name="requireConfirmAtClose" ${settings.requireConfirmAtClose ? 'checked' : ''} /> Cada jogador marca “Conferido” no fechamento</label>
+        </div>`)}
 
-      <h2>Segurança</h2>
-      <label><span>PIN do admin <small class="muted">— protege esta página, anulação de buys e exclusões (vazio = sem PIN)</small></span>
-        <input class="field" name="adminPin" type="password" inputmode="numeric" autocomplete="new-password" value="${esc(settings.adminPin)}" maxlength="8" /></label>
+      ${acc('Segurança', settings.adminPin ? 'PIN ativo' : '<span class="warn-text">sem PIN</span>', `
+        <div class="form">
+          <label><span>PIN do admin <small class="muted">— protege o Admin, aprovações, correções e exclusões (vazio = sem PIN)</small></span>
+            <input class="field" name="adminPin" type="password" inputmode="numeric" autocomplete="new-password" value="${esc(settings.adminPin)}" maxlength="8" /></label>
+        </div>`)}
 
-      <button class="btn primary big block">Salvar configurações</button>
+      <button class="btn primary big block save-settings">Salvar configurações</button>
     </form>
 
-    <section class="card">
-      <h2>Juntar jogadores</h2>
-      <p class="muted small">Para quando a mesma pessoa aparece com dois nomes (ex.: “Tita” e “Titã”). O histórico, o ranking e a chave Pix passam a usar o nome certo.</p>
+    ${syncSection()}
+
+    ${acc('Juntar jogadores', 'mesmo jogador com 2 nomes', `
+      <p class="muted small">Ex.: “Tita” e “Titã”. O histórico, o ranking e a chave Pix passam a usar o nome certo.</p>
       <div class="form merge"><div class="grid2">
         <label for="merge-from">Nome errado<select class="field" id="merge-from">${S.knownPlayers().map((n) => `<option>${esc(n)}</option>`).join('')}</select></label>
         <label for="merge-to">Nome certo<select class="field" id="merge-to">${S.knownPlayers().map((n, i) => `<option ${i === 1 ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>
       </div></div>
-      <button class="btn" data-action="merge-players">Juntar</button>
-    </section>
+      <button class="btn" data-action="merge-players">Juntar</button>`)}
 
-    <section class="card">
-      <h2>Backup</h2>
-      <p class="muted small">Exporte um backup de vez em quando (${(S.storageSize() / 1024).toFixed(0)} KB em cache neste aparelho).</p>
+    ${acc('Backup', `${(S.storageSize() / 1024).toFixed(0)} KB neste celular`, `
+      <p class="muted small">Exporte um backup de vez em quando e mande no grupo.</p>
       <div class="row wrap">
         <button class="btn" data-action="export">Exportar backup</button>
         <label class="btn">Importar backup<input type="file" accept="application/json,.json" data-import hidden /></label>
-      </div>
-    </section>
+      </div>`)}
 
-    <section class="card danger-zone">
-      <h2>Zona de perigo</h2>
+    ${acc('Zona de perigo', '', `
       <div class="row wrap">
         <button class="btn danger" data-action="cancel-session" ${session ? '' : 'disabled'}>Descartar jogatina atual</button>
         <button class="btn danger" data-action="clear-history" ${history.length ? '' : 'disabled'}>Mandar histórico para a lixeira</button>
-      </div>
-    </section>`;
+      </div>`)}`;
+}
+
+// ---------- Ajuda: o que fazer em cada problema ----------
+const HELP = [
+  ['Durante o jogo', [
+    ['Lancei um buy errado ou em dobro', 'Toque no nome do jogador → <strong>Anular</strong> no buy errado (pede motivo). Ele fica riscado no registro.'],
+    ['Esqueceram de lançar um buy, ou o jogador não pode assinar', 'Toque no nome do jogador → <strong>＋ Buy pelo admin</strong>. Entra já aprovado e fica marcado no registro.'],
+    ['O buy foi para o jogador errado', 'Anule no jogador errado e lance no certo com <strong>＋ Buy pelo admin</strong>.'],
+    ['Pedido de buy parado esperando aprovação', 'Na mesa, toque em <strong>Aprovar</strong> (pede PIN) — ou aprove no celular do admin, que não pede PIN.'],
+    ['Alguém vai embora antes', 'Toque no nome dele → <strong>🏁 Encerrar jogo</strong>. Conte as fichas dele (ou “Saiu zerado”) e mande o valor ao caixa.'],
+    ['Contaram errado as fichas de quem já saiu', 'Em <strong>Finalizar jogatina</strong>, toque em <strong>✎ Editar</strong> na linha dele. Ou, na ficha dele, <strong>Desfazer saída</strong>.'],
+    ['Nome errado ou jogador repetido', 'Ficha do jogador → <strong>Renomear</strong>. Mesmo jogador com dois nomes no histórico: Admin → <strong>Juntar jogadores</strong>.'],
+    ['A internet caiu', 'Continue lançando: aparece a faixa laranja e tudo fica guardado no celular até a internet voltar. Só começar e encerrar a jogatina precisam de internet.'],
+    ['Começaram uma jogatina por engano', 'Admin → Zona de perigo → <strong>Descartar jogatina atual</strong>.'],
+  ]],
+  ['No fechamento', [
+    ['A soma das fichas não bate', 'Reconte primeiro. Sobrando ficha geralmente é buy que não foi lançado (use <strong>＋ Buy pelo admin</strong>). Se mesmo assim não fechar, toque em <strong>Encerrar com diferença</strong> e escolha quem absorve: o caixa, todos (proporcional) ou um jogador. Fica registrado com o motivo.'],
+    ['O botão Encerrar não libera', 'A tela diz o que falta: contar algum jogador, aprovar pedido pendente, marcar “Conferido” ou a soma não bater.'],
+  ]],
+  ['Depois do jogo', [
+    ['Fichas trocadas entre jogadores', 'Abra a partida no Histórico → <strong>✎ Corrigir fichas</strong>. Tire de um e ponha no outro; o total não muda.'],
+    ['Faltou lançar buy ou jogador, ou algo maior', 'Abra a partida → <strong>↩︎ Reabrir partida</strong>. Ela volta para a mesa com as contagens; corrija e encerre de novo.'],
+    ['Alguém pagou só uma parte', 'No resultado, toque no botão do jogador → <strong>Só uma parte</strong>. O resto continua pendente.'],
+    ['Alguém ainda não pagou', 'Deixe pendente: o aviso <strong>💸 Acertos pendentes</strong> aparece na mesa e no histórico até ser marcado.'],
+    ['O dinheiro do caixa não bate', 'No resultado, o quadro do caixa mostra quanto <strong>entrou</strong>, quanto <strong>saiu</strong> e quanto deve <strong>ficar com o caixa</strong>. A diferença aponta quem falta pagar ou receber.'],
+    ['Apagaram uma partida', 'Histórico → no fim, <strong>🗑 Lixeira</strong> → <strong>Restaurar</strong>.'],
+  ]],
+  ['App e celular', [
+    ['Celular mostrando versão antiga', 'Toque em <strong>Atualizar agora</strong> na faixa amarela. Se não aparecer, feche o app e abra de novo.'],
+    ['Esqueceram o PIN', 'No celular do admin (que não pede PIN), Admin → <strong>Segurança</strong> mostra e troca o PIN.'],
+    ['Celular novo no grupo', 'Admin → Sincronização → <strong>Compartilhar link do grupo</strong>; quem abrir o link entra.'],
+  ]],
+];
+
+function viewAjuda() {
+  return `
+    <section class="hero small"><h1>O que fazer se…</h1><p class="muted">Toque no problema para ver a saída.</p></section>
+    ${HELP.map(([group, items]) => `
+      <section class="help-group">
+        <h2>${group}</h2>
+        ${items.map(([q, a]) => `<details class="card help"><summary>${q}</summary><p>${a}</p></details>`).join('')}
+      </section>`).join('')}`;
 }
 
 // ---------- Modais de jogador / buy ----------
@@ -999,7 +1187,10 @@ function openPlayer(playerId) {
        ? `<div class="out-box"><strong>🏁 Encerrou às ${hour(out.at)} com ${num(out.chips)} fichas</strong>
             <span>Recebe ${money(outRes.payout)} · saldo <strong class="${netClass(outRes.net)}">${signed(outRes.net)}</strong>${outRes.exact ? '' : ' (estimado até o fechamento)'}</span></div>`
        : st.buys ? `<button type="button" class="btn primary block" data-cashout>🏁 Encerrar jogo de ${esc(p.name)}</button>` : ''}
-     <button type="button" class="btn small ghost pix-btn" data-pix>Pix: ${esc(S.pixOf(p.name) || 'cadastrar chave')} ✎</button>
+     <div class="row wrap tight">
+       <button type="button" class="btn small ghost" data-pix>Pix: ${esc(S.pixOf(p.name) || 'cadastrar chave')} ✎</button>
+       ${out ? '' : '<button type="button" class="btn small ghost" data-admin-buy>＋ Buy pelo admin</button>'}
+     </div>
      <ul class="entries">
        ${entries.map((e) => `<li class="${e.voided ? 'voided' : ''}">
           <div><strong>${e.voided ? 'Buy anulado' : e.pending ? '⏳ Aguardando aprovação' : `Buy #${e.seq}`}</strong><small>${hour(e.at)} · ${money(e.value)}</small>
@@ -1042,6 +1233,7 @@ function openPlayer(playerId) {
         openPlayer(playerId);
       });
       root.querySelector('[data-cashout]')?.addEventListener('click', () => openCashOut(playerId));
+      root.querySelector('[data-admin-buy]')?.addEventListener('click', () => openAdminBuy(playerId));
       root.querySelector('[data-undo-out]')?.addEventListener('click', async () => {
         if (!(await requireAdmin('desfazer a saída de um jogador'))) return openPlayer(playerId);
         const ok = await confirmDialog('Desfazer saída?', `${esc(p.name)} volta para a mesa e a contagem dele será refeita no fechamento.`, { confirmText: 'Desfazer saída', danger: true });
@@ -1053,6 +1245,45 @@ function openPlayer(playerId) {
           attempt(() => S.removePlayer(playerId));
         }
       });
+    },
+  );
+}
+
+/** Saída para buy esquecido ou sem assinatura: o admin lança direto, já aprovado, com motivo. */
+async function openAdminBuy(playerId) {
+  const p = S.getPlayer(playerId);
+  if (!p) return;
+  if (!(await requireAdmin('lançar buy pelo admin'))) return openPlayer(playerId);
+  let qty = 1;
+  const t = S.buyTerms();
+  openModal(
+    `<header><h2>Buy pelo admin · ${esc(p.name)}</h2><button class="icon-btn" data-close aria-label="Fechar">✕</button></header>
+     <p class="hint">Para buy que ficou sem lançar ou sem assinatura. Entra já aprovado e fica marcado no registro como lançado pelo admin.</p>
+     <div class="qty"><button type="button" class="qty-btn" data-dec aria-label="Menos um">−</button><output data-qty>1</output><button type="button" class="qty-btn" data-inc aria-label="Mais um">+</button></div>
+     <div class="buy-amount"><strong data-total>${money(t.value)}</strong><span data-chips>${num(t.chips)} fichas</span></div>
+     <label class="count"><span>Motivo</span><input class="field" data-reason maxlength="80" placeholder="Ex.: esqueceram de lançar às 22h" /></label>
+     <footer><button type="button" class="btn ghost" data-close>Cancelar</button><button type="button" class="btn primary" data-ok disabled>Lançar</button></footer>`,
+    (root) => {
+      const reason = root.querySelector('[data-reason]');
+      const ok = root.querySelector('[data-ok]');
+      const update = () => {
+        root.querySelector('[data-qty]').textContent = qty;
+        root.querySelector('[data-total]').textContent = money(t.value * qty);
+        root.querySelector('[data-chips]').textContent = `${num(t.chips * qty)} fichas`;
+        ok.textContent = qty > 1 ? `Lançar ${qty} buys` : 'Lançar buy';
+        ok.disabled = !reason.value.trim();
+      };
+      root.querySelector('[data-dec]').addEventListener('click', () => { qty = Math.max(1, qty - 1); update(); });
+      root.querySelector('[data-inc]').addEventListener('click', () => { qty = Math.min(S.MAX_BUYS_PER_REQUEST, qty + 1); update(); });
+      reason.addEventListener('input', update);
+      ok.addEventListener('click', () => {
+        ok.disabled = true;
+        const done = attempt(() => S.addBuys(playerId, qty, [], { admin: true, reason: reason.value }));
+        if (done) { closeModal(); toast(`${plural(qty, 'buy lançado', 'buys lançados')} para ${p.name}`); }
+        else ok.disabled = false;
+      });
+      update();
+      reason.focus();
     },
   );
 }
@@ -1255,7 +1486,7 @@ function render() {
   renderedKey = key;
 
   const saved = snapshotInputs();
-  const views = { mesa: viewMesa, fechar: viewFechar, resultado: () => viewResultado(arg), historico: viewHistorico, ranking: () => viewRanking(arg), admin: viewAdmin };
+  const views = { mesa: viewMesa, fechar: viewFechar, resultado: () => viewResultado(arg), historico: viewHistorico, ranking: () => viewRanking(arg), admin: viewAdmin, ajuda: viewAjuda };
   app.innerHTML = (views[name] || viewMesa)();
   app.dataset.view = name;
   restoreInputs(saved);
@@ -1324,6 +1555,8 @@ app.addEventListener('click', async (e) => {
       return;
     }
     case 'audit': return openAudit(id);
+    case 'log': return openLog();
+    case 'close-quebra': return openQuebra();
     case 'correct-chips': return openCorrection(id);
     case 'edit-cashout': {
       const p = S.getPlayer(id);
@@ -1399,11 +1632,22 @@ app.addEventListener('click', async (e) => {
       if (n) toast(`${plural(n, 'buy aprovado', 'buys aprovados')} ✓`);
       return;
     }
-    case 'settle': {
-      if (!(await requireAdmin('marcar acertos'))) return;
-      const s = S.getHistorySession(id);
-      const item = s && S.settlementItems(s).find((x) => x.playerId === el.dataset.player);
-      if (item) S.setSettled(id, item.playerId, !item.settledAt);
+    case 'settle': return openSettle(id, el.dataset.player);
+    case 'reopen-session': {
+      if (S.getState().session) return toast('Já existe uma jogatina aberta. Encerre ou descarte antes de reabrir outra.', { type: 'error', timeout: 7000 });
+      if (!(await requireAdmin('reabrir a partida'))) return;
+      const reason = await ask({
+        title: 'Reabrir partida?',
+        body: 'A partida volta para a mesa com as contagens do fechamento. Corrija o que precisar e encerre de novo. Os acertos de Pix marcados nela serão zerados.',
+        input: 'placeholder="Motivo (ex.: faltou lançar 1 buy do Ian)" maxlength="100"',
+        confirmText: 'Reabrir',
+        validate: (v) => (v ? null : 'Informe o motivo'),
+      });
+      if (!reason) return;
+      if ((await attemptAsync(() => S.reopenSession(id, reason))) !== undefined || S.getState().session?.id === id) {
+        toast('Partida reaberta');
+        location.hash = '#/';
+      }
       return;
     }
     case 'settle-all':
